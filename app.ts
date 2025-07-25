@@ -10,7 +10,7 @@ import { JSONSchemaArray } from "openai/lib/jsonschema";
 
 // Optimized constants for better performance and cost control
 const MIN_CHUNK_NUM = 14;
-const MIN_WORD_COUNT = 10;
+const MIN_WORD_COUNT = 5;
 const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
 const TRANSCRIPTION_CACHE_TTL = 60000; // 1 minute cache
 
