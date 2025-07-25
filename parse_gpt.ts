@@ -47,8 +47,20 @@ const FINAL_SYS_TXT =
 
 // Revise transcription text for accuracy/clarity
 export async function reviseTranscription(rawText: string): Promise<string> {
-    const tokenCount = tokenCounter4o.encode(rawText).length
-    const batchModel = tokenCount < 20 ? "gpt-4.1-nano" : "gpt-4o-mini"
+    // Skip revision for very short text - not worth the API cost
+    if (rawText.trim().length < 20) {
+        return rawText;
+    }
+
+    // Skip revision if text looks already clean (no obvious transcription errors)
+    const hasTypicalTranscriptionErrors = /\b(um|uh|er|ah)\b|[.]{2,}|\s{2,}|[^\w\s.,!?-]/i.test(rawText);
+    if (!hasTypicalTranscriptionErrors && rawText.length < 100) {
+        console.log("Text appears clean, skipping revision to save costs");
+        return rawText;
+    }
+
+    const tokenCount = tokenCounter4o.encode(rawText).length;
+    const batchModel = tokenCount < 20 ? "gpt-4o-mini" : "gpt-4o-mini"; // Always use mini for revision
 
     const completion = await openai.chat.completions.create({
         model: batchModel,
@@ -56,7 +68,7 @@ export async function reviseTranscription(rawText: string): Promise<string> {
             { role: "system", content: REVISE_SYS_TXT },
             { role: "user", content: rawText },
         ],
-        max_tokens: 200,
+        max_tokens: Math.min(200, Math.ceil(rawText.length * 1.2)), // Dynamic token limit
         response_format: { type: "json_object" },
         temperature: 0.0,
     });
@@ -66,14 +78,16 @@ export async function reviseTranscription(rawText: string): Promise<string> {
     const content = message?.content;
 
     if (!content) {
-        throw new Error(`OpenAI response was empty or malformed: ${content}`);
+        console.warn("OpenAI revision returned empty content, using original");
+        return rawText;
     }
 
     try {
         const parsed = JSON.parse(content) as { correctedText: string };
-        return parsed.correctedText;
+        return parsed.correctedText || rawText;
     } catch {
-        return content;
+        console.warn("Failed to parse revision JSON, using original text");
+        return rawText;
     }
 }
 
@@ -83,8 +97,26 @@ export async function extractAttributesFromText(
     template: FieldDef[],
     currAttributes: Record<string, string>
 ): Promise<Record<string, string>> {
+    // Skip extraction if text is too short or template is empty
+    if (correctedText.trim().length < 10 || template.length === 0) {
+        return {};
+    }
+
+    // Quick keyword check - only extract if relevant keywords found
+    const templateKeywords = template.map(t => t.field_name.toLowerCase());
+    const textLower = correctedText.toLowerCase();
+    const hasRelevantKeywords = templateKeywords.some(keyword =>
+        textLower.includes(keyword) ||
+        textLower.includes(keyword.replace(/[_-]/g, ' '))
+    );
+
+    if (!hasRelevantKeywords && Object.keys(currAttributes).length > 0) {
+        console.log("No relevant keywords found, skipping extraction");
+        return {};
+    }
+
     const tokenCount = tokenCounter4o.encode(correctedText).length;
-    const batchModel = tokenCount < 20 ? "gpt-4.1-nano" : "gpt-4o-mini";
+    const batchModel = "gpt-4o-mini"; // Always use mini for extraction
 
     const completion = await openai.chat.completions.create({
         model: batchModel,
@@ -98,27 +130,31 @@ export async function extractAttributesFromText(
                 })
             },
         ],
-        max_tokens: 250,
+        max_tokens: Math.min(250, template.length * 30), // Dynamic token allocation
         response_format: { type: "json_object" },
         temperature: 0.0,
     });
+
     const choice = completion.choices?.[0];
     const message = choice?.message;
     const content = message?.content;
 
     if (!content) {
-        throw new Error(`OpenAI response was empty or malformed: ${content} `);
+        console.warn("Empty response from attribute extraction");
+        return {};
     }
 
     try {
         const parsed = JSON.parse(content) as { parsedAttributes: Record<string, string> };
         const cleaned = Object.fromEntries(
-            Object.entries(parsed.parsedAttributes).filter(([, v]) => v !== "" && v !== "N/A")
+            Object.entries(parsed.parsedAttributes || {}).filter(([, v]) => v !== "" && v !== "N/A" && v?.trim())
         );
 
+        console.log(`Extracted ${Object.keys(cleaned).length} attributes from ${correctedText.length} chars`);
         return cleaned;
-    } catch {
-        return currAttributes;
+    } catch (error) {
+        console.warn("Failed to parse attribute extraction JSON:", error);
+        return {};
     }
 }
 
@@ -127,48 +163,65 @@ export async function parseFinalAttributes(
     template: FieldDef[],
     candidateAttributes: Record<string, string>
 ): Promise<Record<string, string>> {
-    const neededTokens = Math.min(tokenCounter.encode(fullTranscript).length + 500, 8000);
-
-    // Call the OpenAI chat completion API
-    const completion = await openai.chat.completions.create({
-        model: "gpt-4.1",
-        messages: [
-            { role: "system", content: FINAL_SYS_TXT },
-            {
-                role: "user", content: JSON.stringify({
-                    template: template,
-                    attributes: candidateAttributes,
-                    text: fullTranscript
-                })
-            }
-        ],
-        temperature: 0.0,
-        response_format: { type: "json_object" },
-        max_tokens: neededTokens,
-    });
-
-    const choice = completion.choices?.[0];
-    const message = choice?.message;
-    const content = message?.content;
-
-    if (!content) {
-        throw new Error(`OpenAI response was empty or malformed: ${content} `);
+    // Skip final parsing if transcript is too short or no candidates
+    if (fullTranscript.trim().length < 50) {
+        console.log("Transcript too short for final parsing");
+        return candidateAttributes;
     }
 
+    // Only use expensive GPT-4 for final parsing if we have substantial content
+    const shouldUseGPT4 = fullTranscript.length > 500 && Object.keys(candidateAttributes).length > 0;
+    const model = shouldUseGPT4 ? "gpt-4o" : "gpt-4o-mini";
+
+    // Optimize token usage by limiting context
+    const maxTokens = Math.min(
+        tokenCounter.encode(fullTranscript).length + 500,
+        shouldUseGPT4 ? 4000 : 2000  // Lower limits for mini model
+    );
+
     try {
-        // Parse the JSON response
+        const completion = await openai.chat.completions.create({
+            model: model,
+            messages: [
+                { role: "system", content: FINAL_SYS_TXT },
+                {
+                    role: "user", content: JSON.stringify({
+                        template: template,
+                        attributes: candidateAttributes,
+                        text: fullTranscript.slice(-2000) // Use only last 2000 chars for context
+                    })
+                }
+            ],
+            temperature: 0.0,
+            response_format: { type: "json_object" },
+            max_tokens: maxTokens,
+        });
+
+        const choice = completion.choices?.[0];
+        const message = choice?.message;
+        const content = message?.content;
+
+        if (!content) {
+            console.warn("Empty response from final attributes parsing");
+            return candidateAttributes;
+        }
+
         const parsed = JSON.parse(content) as { finalAttributes: Record<string, string> };
         const merged = { ...candidateAttributes };
 
-        for (const [attr, val] of Object.entries(parsed.finalAttributes)) {
-            if (val && val !== "N/A") merged[attr] = val;
+        let updatedCount = 0;
+        for (const [attr, val] of Object.entries(parsed.finalAttributes || {})) {
+            if (val && val !== "N/A" && val.trim() && val !== merged[attr]) {
+                merged[attr] = val;
+                updatedCount++;
+            }
         }
 
-        console.log("Final sweep completed. Verified attributes:", merged);
+        console.log(`Final parsing complete using ${model}. Updated ${updatedCount} attributes.`);
         return merged;
+
     } catch (err) {
         console.error("Error during final attribute extraction:", err);
-        // return the candidate fields to their current_values
-        return candidateAttributes;
+        return candidateAttributes; // Graceful fallback
     }
 }

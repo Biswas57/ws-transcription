@@ -13,5 +13,6 @@
         "parse_gpt.ts",
         "parse_groq.ts",
         "interfaces.ts",
+        "cost-monitor.ts"
     ]
 }
