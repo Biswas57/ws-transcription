@@ -10,9 +10,11 @@
     "include": [
         "app.ts",
         "transcription.ts",
-        "parse_gpt.ts",
-        "parse_groq.ts",
-        "interfaces.ts",
-        "cost-monitor.ts"
+        "parse-gpt.ts",
+        "parse-groq.ts",
+        "util.ts",
+        "transcript-cache.ts",
+        "audio-cache.ts",
+        "test/**/*.ts"
     ]
 }

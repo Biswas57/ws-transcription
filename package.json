@@ -5,20 +5,30 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && node dist/app.js",
-    "test-client": "ts-node test/test.ts"
+    "test-client": "ts-node test/test.ts",
+    "load-test": "npm run build && node dist/load/run.js",
+    "load-test:chaos": "npm run build && node dist/load/run.js --chaos",
+    "load-test:heavy": "npm run build && node dist/load/run.js -c 100 -d 30 -r 6"
   },
   "dependencies": {
     "@dqbd/tiktoken": "^1.0.21",
+    "chalk": "^5.4.1",
+    "commander": "^14.0.0",
     "dotenv": "^17.0.1",
     "form-data": "^4.0.0",
+    "hdr-histogram-js": "^3.0.1",
+    "murmurhash-js": "^1.0.0",
     "openai": "^5.8.2",
     "p-queue": "^7.3.0",
+    "quick-lru": "^7.0.1",
+    "vitest": "^3.2.4",
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "@types/node": "^20.5.1",
+    "@types/murmurhash-js": "^1.0.6",
+    "@types/node": "^20.19.9",
     "@types/ws": "^8.18.1",
-    "ts-node": "^10.9.1",
-    "typescript": "^5.2.2"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
   }
 }

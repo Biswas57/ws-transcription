@@ -1,4 +1,4 @@
-import { FieldDef } from "./interfaces";
+import { FieldDef } from "./util";
 import { encoding_for_model } from "@dqbd/tiktoken"
 import { OpenAI } from "openai";
 

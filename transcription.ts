@@ -21,7 +21,7 @@ export function appendWithOverlap(base: string, addition: string): [string, numb
 }
 
 // Optimized audio quality check
-export function isAudioWorthTranscribing(buffer: Buffer): boolean {
+export function hasVoiceActivity(buffer: Buffer): boolean {
     if (buffer.length < MIN_AUDIO_SIZE_BYTES) {
         return false;
     }
@@ -47,7 +47,7 @@ export function isAudioWorthTranscribing(buffer: Buffer): boolean {
 
 export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
     // Pre-flight checks to avoid unnecessary API calls
-    if (!isAudioWorthTranscribing(buffer)) {
+    if (!hasVoiceActivity(buffer)) {
         console.log("Audio quality insufficient for transcription, skipping");
         return "";
     }

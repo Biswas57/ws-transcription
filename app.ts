@@ -3,53 +3,13 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { WebSocket, WebSocketServer } from "ws";
-import { FieldDef, WSState } from "./interfaces";
-import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap, isAudioWorthTranscribing } from "./transcription";
-import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "./parse_gpt";
+import { FieldDef, WSState } from "./util";
+import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap, hasVoiceActivity } from "./transcription";
+import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "./parse-gpt";
+import { createAudioKey, getCachedAudio, cacheAudio } from "./audio-cache"
+import { createTranscriptKey, getCachedTranscript, cacheTranscript } from "./transcript-cache"
+import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "./util";
 import { JSONSchemaArray } from "openai/lib/jsonschema";
-
-// Optimized constants for better performance and cost control
-const MIN_CHUNK_NUM = 14;
-const MIN_WORD_COUNT = 5;
-const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
-const TRANSCRIPTION_CACHE_TTL = 60000; // 1 minute cache
-
-// Simple in-memory cache for transcriptions
-const transcriptionCache = new Map<string, { transcription: string, timestamp: number }>();
-
-// Helper function to create cache key from buffer
-function createCacheKey(buffer: Buffer): string {
-    return buffer.toString('base64').slice(0, 64); // Use first 64 chars as key
-}
-
-// Helper function to get cached transcription
-function getCachedTranscription(cacheKey: string): string | null {
-    const cached = transcriptionCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < TRANSCRIPTION_CACHE_TTL) {
-        return cached.transcription;
-    }
-    if (cached) {
-        transcriptionCache.delete(cacheKey); // Remove expired
-    }
-    return null;
-}
-
-// Helper function to cache transcription
-function cacheTranscription(cacheKey: string, transcription: string): void {
-    // Limit cache size to prevent memory issues
-    if (transcriptionCache.size > 100) {
-        const oldestKey = transcriptionCache.keys().next().value;
-        if (oldestKey) {
-            transcriptionCache.delete(oldestKey);
-        }
-    }
-    transcriptionCache.set(cacheKey, { transcription, timestamp: Date.now() });
-}
-
-// Voice activity detection - improved version using the transcription module
-function hasVoiceActivity(buffer: Buffer): boolean {
-    return isAudioWorthTranscribing(buffer);
-}
 
 const wss = new WebSocketServer({ port: 5551 });
 console.log(`WebSocket server listening on ws://0.0.0.0:5551`);
@@ -72,7 +32,13 @@ wss.on("connection", (socket: WebSocket) => {
     socket.on("message", async (data, isBinary) => {
         // Distinguish text vs binary
         if (!isBinary) {
-            const msg = JSON.parse(data.toString());
+            let msg: any;
+            try {
+                msg = JSON.parse(data.toString());
+            } catch {
+                socket.send(JSON.stringify({ error: "bad-json" }));
+                return;
+            }
             console.log(msg, typeof msg);
 
             // Handle start action (init template)
@@ -122,34 +88,24 @@ wss.on("connection", (socket: WebSocket) => {
                     // Check if we have enough audio to process
                     if (!hasVoiceActivity(remainingData)) {
                         console.log("No voice activity in remaining data, skipping final transcription");
-                        socket.send(
-                            JSON.stringify({
-                                corrected_audio: state.transcript,
-                                attributes: state.currAttributes,
-                            })
-                        );
-                        return;
+                    } else {
+                        const audioCacheKey = createAudioKey(remainingData);
+                        let rawFinalTranscription = getCachedAudio(audioCacheKey);
+
+                        if (!rawFinalTranscription) {
+                            rawFinalTranscription = await runWhisperOnBuffer(remainingData);
+                        }
+
+                        // Only revise if transcription is substantial
+                        const wordCount = rawFinalTranscription.trim().split(/\s+/).length;
+                        if (wordCount >= MIN_WORD_COUNT) {
+                            const finalTranscription = await reviseTranscription(rawFinalTranscription);
+                            cacheAudio(audioCacheKey, finalTranscription);
+                            [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, finalTranscription);
+                        }
                     }
 
-                    // Process final chunk with caching
-                    const finalCacheKey = createCacheKey(remainingData);
-                    let finalTranscription = getCachedTranscription(finalCacheKey);
-
-                    if (!finalTranscription) {
-                        finalTranscription = await runWhisperOnBuffer(remainingData);
-                        cacheTranscription(finalCacheKey, finalTranscription);
-                    }
-
-                    // Only revise if transcription is substantial
-                    const wordCount = finalTranscription.trim().split(/\s+/).length;
-                    const fixedTranscription = wordCount >= MIN_WORD_COUNT ?
-                        await reviseTranscription(finalTranscription) :
-                        finalTranscription;
-
-                    // Update transcript
-                    [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, fixedTranscription);
-
-                    // Final attribute extraction with full context
+                    // Update transcript and Final attribute extraction
                     state.currAttributes = await parseFinalAttributes(state.transcript, state.template, state.currAttributes);
 
                     console.log(`Final processing complete: ${state.transcript.length} chars transcribed`);
@@ -160,7 +116,7 @@ wss.on("connection", (socket: WebSocket) => {
                         })
                     );
                 } catch (error) {
-                    console.error("Error in final processing:", error);
+                    console.error("Error in final processing:", error, ". Sending current state without final sweep");
                     // Send current state even if final processing fails
                     socket.send(
                         JSON.stringify({
@@ -200,6 +156,9 @@ wss.on("connection", (socket: WebSocket) => {
         // Skip processing if no voice activity detected
         if (!hasVoiceActivity(state.audioBuffer)) {
             console.log("No voice activity detected, skipping processing");
+            // is it smart to zero the audio buffer and num chunks because were not processing this audio
+            state.audioBuffer = Buffer.alloc(0);
+            state.nchunks = 0;
             return;
         }
 
@@ -212,25 +171,22 @@ wss.on("connection", (socket: WebSocket) => {
         const template = state.template;
         const currAttributes = { ...state.currAttributes }; // Deep copy to prevent race conditions
         const captureBuffer = state.audioBuffer;
-        const cacheKey = createCacheKey(captureBuffer);
+        const audioCacheKey = createAudioKey(captureBuffer);
 
         // reset audio buffers
         state.audioBuffer = Buffer.alloc(0);
         state.nchunks = 0;
 
-        // Check cache first to avoid expensive API calls
-        const cachedTranscription = getCachedTranscription(cacheKey);
-        if (cachedTranscription) {
-            console.log("Using cached transcription");
-            const wordCount = cachedTranscription.trim().split(/\s+/).length;
+        // Check audio cache first to avoid expensive Whisper API calls
+        const cachedAudio = getCachedAudio(audioCacheKey);
+        if (cachedAudio) {
+            console.log("Using cached audio transcription");
+            const wordCount = cachedAudio.trim().split(/\s+/).length;
             if (wordCount >= MIN_WORD_COUNT) {
-                // Skip revision for cached content and go straight to attribute extraction
-                const prevTranscriptSize = state.currTranscriptSize;
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, cachedTranscription);
 
-                const currTranscript = state.transcript.slice(-(prevTranscriptSize + state.currTranscriptSize));
-                const extractedAttributes = await extractAttributesFromText(currTranscript, template, currAttributes);
-                state.currAttributes = { ...state.currAttributes, ...extractedAttributes };
+                // Check for cached content before going to revision and attribute extraction
+                // Process differently if we find a cached transcription and if we don't
+                const currTranscript = await processCachedTranscription(state, cachedAudio);
 
                 socket.send(
                     JSON.stringify({
@@ -247,11 +203,12 @@ wss.on("connection", (socket: WebSocket) => {
             try {
                 const transcription = await runWhisperOnBuffer(captureBuffer);
 
-                // Cache the transcription immediately
-                cacheTranscription(cacheKey, transcription);
+                // Cache the audio transcription and revise immediately
+                const revisedTranscript = await reviseTranscription(transcription)
+                cacheAudio(audioCacheKey, revisedTranscript);
 
                 // check if its even worth parsing to gpt for number of words
-                const wordCount = transcription.trim().split(/\s+/).length;
+                const wordCount = revisedTranscript.trim().split(/\s+/).length;
                 if (wordCount < MIN_WORD_COUNT) {
                     console.log(`Transcription too short (${wordCount} words), skipping processing`);
                     state.audioBuffer = captureBuffer;
@@ -259,26 +216,9 @@ wss.on("connection", (socket: WebSocket) => {
                     return;
                 }
 
-                // Run revision and attribute extraction in parallel for better efficiency
-                const [fixedTranscription, extractedAttributesFromRaw] = await Promise.all([
-                    reviseTranscription(transcription),
-                    // Try extracting from raw transcription first (cheaper)
-                    extractAttributesFromText(transcription, template, currAttributes)
-                ]);
-
-                const prevTranscriptSize = state.currTranscriptSize;
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, fixedTranscription);
-
-                // Use sliding window approach for context-aware extraction
-                const currTranscript = state.transcript.slice(-(prevTranscriptSize + state.currTranscriptSize));
-
-                // Only do expensive GPT extraction if raw extraction didn't yield results
-                const hasNewAttributes = Object.keys(extractedAttributesFromRaw).length > 0;
-                const finalAttributes = hasNewAttributes ?
-                    extractedAttributesFromRaw :
-                    await extractAttributesFromText(currTranscript, template, currAttributes);
-
-                state.currAttributes = { ...state.currAttributes, ...finalAttributes };
+                // Check for cached content before going to revision and attribute extraction
+                // Process differently if we find a cached transcription and if we don't
+                const currTranscript = await processCachedTranscription(state, revisedTranscript);
 
                 // Send update
                 socket.send(
@@ -298,6 +238,34 @@ wss.on("connection", (socket: WebSocket) => {
         console.log("Client disconnected, cleaning up resources");
         // Clear any remaining queue tasks
         queue.clear();
-        // Note: We don't clear the transcription cache as it might be useful for other connections
+        // Note: We don't clear caches as they might be useful for other connections
     });
 });
+
+export async function processCachedTranscription(state: WSState, transcription: string): Promise<string> {
+    // Check transcript cache for revision
+    const transcriptKey = createTranscriptKey(transcription);
+    const cachedtranscript = getCachedTranscript(transcriptKey);
+    const prevTranscriptSize = state.currTranscriptSize;
+
+    let currTranscript: string;
+    if (cachedtranscript) {
+        console.log("Used cached transcript so not updating current attributes");
+        [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, cachedtranscript);
+        currTranscript = state.transcript.slice(-(prevTranscriptSize + state.currTranscriptSize));
+    } else {
+        // if there is cached audio but not cached transcript then go through the normal process 
+        // without revision because the audio stores a revised raw transcript anyways
+        [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, transcription);
+        currTranscript = state.transcript.slice(-(prevTranscriptSize + state.currTranscriptSize));
+
+        // extract attributes and cache this transcript
+        const extractedAttributes = await extractAttributesFromText(currTranscript, state.template, state.currAttributes);
+        cacheTranscript(transcriptKey, transcription);
+
+        // Append the current attributes because we're processing new audio
+        state.currAttributes = { ...state.currAttributes, ...extractedAttributes };
+    }
+
+    return currTranscript;
+}

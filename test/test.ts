@@ -5,8 +5,8 @@ import * as path from "path";
 
 const WS_URL = "ws://0.0.0.0:5551";
 const NUM_SESSIONS = 3;        // how many start/stop cycles to test
-const CHUNK_PAUSE = 800;      // ms between chunks
-const GAP_BETWEEN = 1000;     // ms between sessions
+const CHUNK_PAUSE = 100;      // ms between chunks
+const GAP_BETWEEN = 100;     // ms between sessions
 
 async function delay(ms: number) {
     return new Promise(r => setTimeout(r, ms));
@@ -17,7 +17,7 @@ async function runSession(ws: WebSocket, sessionId: number) {
     ws.send(JSON.stringify({
         action: "start",
         blocks: {
-            id: ["name", "DOB", "location"]
+            id: ["name", "DOB", "place of Birth"]
         }
     }));
     console.log(`→ session #${sessionId} start`);
@@ -50,7 +50,7 @@ async function main() {
             if (i < NUM_SESSIONS) await delay(GAP_BETWEEN);
         }
         // Optionally close after the last session
-        await delay(800);
+        await delay(8000);
         ws.close();
     });
 }
