@@ -1,7 +1,7 @@
 import QuickLRU from "quick-lru";
 import murmur2 from "murmurhash-js";
 
-import { TRANSCRIPTION_CACHE_TTL, MAX_CACHE_ENTRIES, WSState } from "./util"
+import { TRANSCRIPTION_CACHE_TTL, MAX_CACHE_ENTRIES, WSState } from "./util.js"
 
 const segmentCache = new QuickLRU<string, string>({
     maxSize: MAX_CACHE_ENTRIES,

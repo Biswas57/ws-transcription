@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 export const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 
@@ -53,7 +56,7 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
     }
 
     const whisperForm = new FormData();
-    const blob = new Blob([buffer], { type: "audio/webm" });
+    const blob = new Blob([new Uint8Array(buffer)], { type: "audio/webm" });
     whisperForm.append("model", "whisper-1");
     whisperForm.set("file", blob, "audio.webm");
 

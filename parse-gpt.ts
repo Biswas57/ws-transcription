@@ -1,6 +1,8 @@
-import { FieldDef } from "./util";
+import { FieldDef } from "./util.js";
 import { encoding_for_model } from "@dqbd/tiktoken"
 import { OpenAI } from "openai";
+import dotenv from "dotenv";
+dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const tokenCounter4o = encoding_for_model("gpt-4o-mini");

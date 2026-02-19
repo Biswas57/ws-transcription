@@ -1,7 +1,11 @@
 // test/multi-session.ts
 import { WebSocket } from "ws";
 import * as fs from "fs/promises";
-import * as path from "path";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const WS_URL = "ws://0.0.0.0:5551";
 const NUM_SESSIONS = 3;        // how many start/stop cycles to test
