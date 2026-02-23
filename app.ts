@@ -85,7 +85,6 @@ wss.on("connection", (socket: WebSocket) => {
                 // Clear buffer immediately to prevent reuse
                 state.audioBuffer = Buffer.alloc(0);
                 state.nchunks = 0;
-                state.webmHeader = null;
 
                 try {
                     if (!hasVoiceActivity(remainingData)) {
