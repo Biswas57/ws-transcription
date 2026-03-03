@@ -12,7 +12,7 @@ console.log(`WebSocket server listening on ws://0.0.0.0:5551`);
 
 wss.on("connection", (socket: WebSocket) => {
     console.log("new client connected");
-    const queue = new PQueue({ concurrency: 4 });
+    const queue = new PQueue({ concurrency: 1 });
 
     // Initialize per-connection state
     const state: WSState = {
@@ -40,16 +40,17 @@ wss.on("connection", (socket: WebSocket) => {
             // Handle start action (init template)
             if (msg.action === "start") {
                 try {
-                    if (state.template.length === 0) {
-                        for (const temp_block of Object.keys(msg.blocks ?? {})) {
-                            const block = msg.blocks[temp_block];
-                            if (!Array.isArray(block)) continue;
+                    state.template = [];
+                    state.currAttributes = {};
 
-                            for (const field of block) {
-                                const name = String(field);
-                                state.template.push({ block_name: temp_block, field_name: name });
-                                state.currAttributes[name] = "";
-                            }
+                    for (const temp_block of Object.keys(msg.blocks ?? {})) {
+                        const block = msg.blocks[temp_block];
+                        if (!Array.isArray(block)) continue;
+
+                        for (const field of block) {
+                            const name = String(field);
+                            state.template.push({ block_name: temp_block, field_name: name });
+                            state.currAttributes[name] = "";
                         }
                     }
 
@@ -85,6 +86,7 @@ wss.on("connection", (socket: WebSocket) => {
                 // Clear buffer immediately to prevent reuse
                 state.audioBuffer = Buffer.alloc(0);
                 state.nchunks = 0;
+                state.webmHeader = null;
 
                 try {
                     if (!hasVoiceActivity(remainingData)) {
@@ -103,6 +105,8 @@ wss.on("connection", (socket: WebSocket) => {
                     state.currAttributes = await parseFinalAttributes(state.transcript, state.template, state.currAttributes);
 
                     console.log(`Final processing complete: ${state.transcript.length} chars transcribed`);
+                    console.log("Final transcript:", state.transcript);
+                    console.log("Final attributes:", state.currAttributes);
                     socket.send(
                         JSON.stringify({
                             corrected_audio: state.transcript,
