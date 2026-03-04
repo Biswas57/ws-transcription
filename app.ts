@@ -12,7 +12,7 @@ console.log(`WebSocket server listening on ws://0.0.0.0:5551`);
 
 wss.on("connection", (socket: WebSocket) => {
     console.log("new client connected");
-    const queue = new PQueue({ concurrency: 1 });
+    const queue = new PQueue({ concurrency: 4 });
 
     // Initialize per-connection state
     const state: WSState = {
