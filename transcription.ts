@@ -23,37 +23,37 @@ export function appendWithOverlap(base: string, addition: string): [string, numb
     return [base + addition, additionSize];          // no overlap at all
 }
 
-// Optimized audio quality check
-export function hasVoiceActivity(buffer: Buffer): boolean {
-    if (buffer.length < MIN_AUDIO_SIZE_BYTES) {
-        return false;
-    }
+// // Optimized audio quality check
+// export function hasVoiceActivity(buffer: Buffer): boolean {
+//     if (buffer.length < MIN_AUDIO_SIZE_BYTES) {
+//         return false;
+//     }
 
-    // Simple audio energy check - look for variation in the data
-    let variance = 0;
-    const sampleSize = Math.min(1000, buffer.length);
-    let sum = 0;
+//     // Simple audio energy check - look for variation in the data
+//     let variance = 0;
+//     const sampleSize = Math.min(1000, buffer.length);
+//     let sum = 0;
 
-    for (let i = 0; i < sampleSize; i++) {
-        sum += buffer[i];
-    }
-    const mean = sum / sampleSize;
+//     for (let i = 0; i < sampleSize; i++) {
+//         sum += buffer[i];
+//     }
+//     const mean = sum / sampleSize;
 
-    for (let i = 0; i < sampleSize; i++) {
-        variance += Math.pow(buffer[i] - mean, 2);
-    }
-    variance = variance / sampleSize;
+//     for (let i = 0; i < sampleSize; i++) {
+//         variance += Math.pow(buffer[i] - mean, 2);
+//     }
+//     variance = variance / sampleSize;
 
-    // If variance is too low, it's likely silence or very low quality
-    return variance > 100; // Threshold for meaningful audio content
-}
+//     // If variance is too low, it's likely silence or very low quality
+//     return variance > 100; // Threshold for meaningful audio content
+// }
 
 export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
-    // Pre-flight checks to avoid unnecessary API calls
-    if (!hasVoiceActivity(buffer)) {
-        console.log("Audio quality insufficient for transcription, skipping");
-        return "";
-    }
+    // // Pre-flight checks to avoid unnecessary API calls
+    // if (!hasVoiceActivity(buffer)) {
+    //     console.log("Audio quality insufficient for transcription, skipping");
+    //     return "";
+    // }
 
     const whisperForm = new FormData();
     const blob = new Blob([new Uint8Array(buffer)], { type: "audio/webm" });

@@ -4,7 +4,7 @@ dotenv.config();
 
 import { WebSocket, WebSocketServer } from "ws";
 import { FieldDef, WSState, MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "./util.js";
-import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap, hasVoiceActivity } from "./transcription.js";
+import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap } from "./transcription.js";
 import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "./parse-gpt.js";
 
 const wss = new WebSocketServer({ port: 5551 });
@@ -89,17 +89,17 @@ wss.on("connection", (socket: WebSocket) => {
                 state.webmHeader = null;
 
                 try {
-                    if (!hasVoiceActivity(remainingData)) {
-                        console.log("No voice activity in remaining data, skipping final transcription");
-                    } else {
-                        const rawFinalTranscription = await runWhisperOnBuffer(remainingData);
+                    // if (!hasVoiceActivity(remainingData)) {
+                    //     console.log("No voice activity in remaining data, skipping final transcription");
+                    // } else {
+                    const rawFinalTranscription = await runWhisperOnBuffer(remainingData);
 
-                        const wordCount = rawFinalTranscription.trim().split(/\s+/).length;
-                        if (wordCount >= MIN_WORD_COUNT) {
-                            const finalTranscription = await reviseTranscription(rawFinalTranscription);
-                            [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, finalTranscription);
-                        }
+                    const wordCount = rawFinalTranscription.trim().split(/\s+/).length;
+                    if (wordCount >= MIN_WORD_COUNT) {
+                        const finalTranscription = await reviseTranscription(rawFinalTranscription);
+                        [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, finalTranscription);
                     }
+
 
                     // Final attribute extraction pass
                     state.currAttributes = await parseFinalAttributes(state.transcript, state.template, state.currAttributes);
@@ -151,13 +151,14 @@ wss.on("connection", (socket: WebSocket) => {
             return;
         }
 
-        // Skip processing if no voice activity detected
-        if (!hasVoiceActivity(state.audioBuffer)) {
-            console.log("No voice activity detected, skipping processing");
-            state.audioBuffer = Buffer.alloc(0);
-            state.nchunks = 0;
-            return;
-        }
+        // // Optional: early voice activity check to skip processing bad audio
+        // // Skip processing if no voice activity detected
+        // if (!hasVoiceActivity(state.audioBuffer)) {
+        //     console.log("No voice activity detected, skipping processing");
+        //     state.audioBuffer = Buffer.alloc(0);
+        //     state.nchunks = 0;
+        //     return;
+        // }
 
         // Prepare audioData with header
         if (!checkWebMIntegrity(state.audioBuffer) && state.webmHeader) {
