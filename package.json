@@ -19,6 +19,7 @@
     "form-data": "^4.0.0",
     "groq-sdk": "^0.37.0",
     "hdr-histogram-js": "^3.0.1",
+    "jsonwebtoken": "^9.0.3",
     "murmurhash-js": "^1.0.0",
     "openai": "^5.8.2",
     "p-queue": "^7.3.0",
@@ -27,6 +28,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/murmurhash-js": "^1.0.6",
     "@types/node": "^20.19.9",
     "@types/ws": "^8.18.1",

@@ -1,5 +1,5 @@
 import { Groq } from "groq-sdk";
-import { WSState, FieldDef } from "./util.js";
+import { FieldDef } from "./types.js";
 
 const client = new Groq({
     apiKey: process.env['GROQ_API_KEY'],

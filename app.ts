@@ -1,214 +1,200 @@
-import PQueue from "p-queue";
 import dotenv from "dotenv";
 dotenv.config();
 
 import { WebSocket, WebSocketServer } from "ws";
-import { FieldDef, WSState, MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "./util.js";
-import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap } from "./transcription.js";
-import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "./parse-gpt.js";
+import { MAX_AUDIO_BUFFER_SIZE } from "./types.js";
+import { TranscriptionHandler, StartPayload, InboundMessage } from "./types.js";
+import { FormFillHandler } from "./handlers/FormFillHandler.js";
+import { NotesHandler } from "./handlers/NotesHandler.js";
+import { verifyWSToken } from "./ws-token.js";
 
 const wss = new WebSocketServer({ port: 5551 });
 console.log(`WebSocket server listening on ws://0.0.0.0:5551`);
 
-wss.on("connection", (socket: WebSocket) => {
+// ── Optional: origin check ─────────────────────────────────────────────────
+// Set ALLOWED_ORIGIN in .env to restrict connections to your web app only.
+// e.g. ALLOWED_ORIGIN=https://formify-webapp.vercel.app
+// Leave unset to allow all origins (useful for local dev).
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
+
+wss.on("connection", (socket: WebSocket, req) => {
+    // ── Origin check (optional but recommended in production) ───────────────
+    if (ALLOWED_ORIGIN) {
+        const origin = req.headers.origin ?? "";
+        if (origin !== ALLOWED_ORIGIN) {
+            console.warn(`[app] Rejected connection from origin: ${origin}`);
+            socket.close(1008, "Origin not allowed");
+            return;
+        }
+    }
+
     console.log("new client connected");
-    const queue = new PQueue({ concurrency: 4 });
 
-    // Initialize per-connection state
-    const state: WSState = {
-        nchunks: 0,
-        audioBuffer: Buffer.alloc(0),
-        transcript: "",
-        currAttributes: {},
-        template: [],
-        webmHeader: null,
-        currTranscriptSize: 0,
-    };
+    // ── Per-connection state ────────────────────────────────────────────────
+    // Before a valid "start" is received, handler is null and the connection
+    // will not process any audio or commands.
+    let handler: TranscriptionHandler | null = null;
+    let authenticated = false;
 
+    // Safety: auto-close connections that never authenticate within 30s
+    const authTimeout = setTimeout(() => {
+        if (!authenticated) {
+            console.warn("[app] Connection timed out waiting for authenticated start");
+            socket.close(1008, "Authentication timeout");
+        }
+    }, 30_000);
+
+    // ── Message routing ─────────────────────────────────────────────────────
     socket.on("message", async (data, isBinary) => {
-        // Distinguish text vs binary
-        if (!isBinary) {
-            let msg: any;
-            try {
-                msg = JSON.parse(data.toString());
-            } catch {
-                socket.send(JSON.stringify({ error: "bad-json" }));
+
+        // Binary frame → audio chunk (only allowed after authenticated start)
+        if (isBinary) {
+            if (!handler || !authenticated) {
+                console.warn("[app] Audio chunk received before authenticated start — ignoring");
                 return;
             }
-            console.log(msg, typeof msg);
+            const chunk = Buffer.from(data as Buffer);
+            await handler.onAudioChunk(chunk);
+            return;
+        }
 
-            // Handle start action (init template)
-            if (msg.action === "start") {
-                try {
-                    state.template = [];
-                    state.currAttributes = {};
+        // Text frame → JSON command
+        let msg: InboundMessage & { token?: string };
+        try {
+            msg = JSON.parse(data.toString()) as InboundMessage & { token?: string };
+        } catch {
+            socket.send(JSON.stringify({ type: "error", code: "bad-json" }));
+            return;
+        }
 
-                    for (const temp_block of Object.keys(msg.blocks ?? {})) {
-                        const block = msg.blocks[temp_block];
-                        if (!Array.isArray(block)) continue;
+        // ── start ─────────────────────────────────────────────────────────
+        if (msg.action === "start") {
+            const startMsg = msg as StartPayload & { token?: string };
 
-                        for (const field of block) {
-                            const name = String(field);
-                            state.template.push({ block_name: temp_block, field_name: name });
-                            state.currAttributes[name] = "";
-                        }
-                    }
-
-                    // Optional: acknowledge start so clients can confirm it worked
-                    socket.send(JSON.stringify({ action: "started", template_size: state.template.length }));
-                    return;
-                } catch {
-                    socket.send(JSON.stringify({ error: "bad-start-payload" }));
-                    return;
-                }
-            }
-
-            // Handle stop action
-            if (msg.action === "stop") {
-                await queue.onIdle();
-
-                // process remaining audio buffer and clear it
-                let remainingData = state.audioBuffer;
-                if (remainingData.length === 0) {
-                    socket.send(
-                        JSON.stringify({
-                            corrected_audio: state.transcript,
-                            attributes: state.currAttributes,
-                        })
-                    );
-                    return;
-                }
-
-                if (!checkWebMIntegrity(remainingData) && state.webmHeader) {
-                    remainingData = Buffer.concat([state.webmHeader, remainingData]);
-                }
-
-                // Clear buffer immediately to prevent reuse
-                state.audioBuffer = Buffer.alloc(0);
-                state.nchunks = 0;
-                state.webmHeader = null;
-
-                try {
-                    // if (!hasVoiceActivity(remainingData)) {
-                    //     console.log("No voice activity in remaining data, skipping final transcription");
-                    // } else {
-                    const rawFinalTranscription = await runWhisperOnBuffer(remainingData);
-
-                    const wordCount = rawFinalTranscription.trim().split(/\s+/).length;
-                    if (wordCount >= MIN_WORD_COUNT) {
-                        const finalTranscription = await reviseTranscription(rawFinalTranscription);
-                        [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, finalTranscription);
-                    }
-
-
-                    // Final attribute extraction pass
-                    state.currAttributes = await parseFinalAttributes(state.transcript, state.template, state.currAttributes);
-
-                    console.log(`Final processing complete: ${state.transcript.length} chars transcribed`);
-                    console.log("Final transcript:", state.transcript);
-                    console.log("Final attributes:", state.currAttributes);
-                    socket.send(
-                        JSON.stringify({
-                            corrected_audio: state.transcript,
-                            attributes: state.currAttributes,
-                        })
-                    );
-                } catch (error) {
-                    console.error("Error in final processing:", error, ". Sending current state without final sweep");
-                    socket.send(
-                        JSON.stringify({
-                            corrected_audio: state.transcript,
-                            attributes: state.currAttributes,
-                            error: "final-processing-failed",
-                        })
-                    );
-                }
+            // ── Token validation ─────────────────────────────────────────
+            if (!startMsg.token) {
+                socket.send(JSON.stringify({
+                    type: "error",
+                    code: "missing-token",
+                    message: "start payload must include a session token",
+                }));
+                socket.close(1008, "Missing token");
                 return;
             }
 
-            return;
-        }
-
-        // Binary data (audio chunk)
-        const chunk = Buffer.from(data as Buffer);
-
-        // Prevent excessive memory usage
-        if (state.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
-            console.warn("Audio buffer size limit exceeded, dropping chunk");
-            socket.send(JSON.stringify({ error: "audio-buffer-overflow" }));
-            return;
-        }
-
-        // Capture header for the first packet to come in
-        if (!state.webmHeader && checkWebMIntegrity(chunk)) {
-            state.webmHeader = chunk;
-        }
-
-        state.audioBuffer = Buffer.concat([state.audioBuffer, chunk]);
-
-        state.nchunks++;
-        if (state.nchunks < MIN_CHUNK_NUM) {
-            return;
-        }
-
-        // // Optional: early voice activity check to skip processing bad audio
-        // // Skip processing if no voice activity detected
-        // if (!hasVoiceActivity(state.audioBuffer)) {
-        //     console.log("No voice activity detected, skipping processing");
-        //     state.audioBuffer = Buffer.alloc(0);
-        //     state.nchunks = 0;
-        //     return;
-        // }
-
-        // Prepare audioData with header
-        if (!checkWebMIntegrity(state.audioBuffer) && state.webmHeader) {
-            state.audioBuffer = Buffer.concat([state.webmHeader, state.audioBuffer]);
-        }
-
-        // Snapshot buffer (and reset capture state immediately)
-        const captureBuffer = state.audioBuffer;
-        state.audioBuffer = Buffer.alloc(0);
-        state.nchunks = 0;
-
-        // Non-blocking queue processing
-        queue.add(async () => {
+            let tokenPayload: { userId: string; mode: string };
             try {
-                const transcription = await runWhisperOnBuffer(captureBuffer);
-                const revisedTranscript = await reviseTranscription(transcription);
-
-                const wordCount = revisedTranscript.trim().split(/\s+/).length;
-                if (wordCount < MIN_WORD_COUNT) {
-                    console.log(`Transcription too short (${wordCount} words), skipping processing`);
-                    return;
-                }
-
-                const prevTranscriptSize = state.currTranscriptSize;
-
-                // Append to session transcript
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, revisedTranscript);
-
-                // Only send the newly-added window (similar to your original)
-                const currTranscript = state.transcript.slice(-(prevTranscriptSize + state.currTranscriptSize));
-
-                // Extract attributes incrementally
-                const extractedAttributes = await extractAttributesFromText(currTranscript, state.template, state.currAttributes);
-                state.currAttributes = { ...state.currAttributes, ...extractedAttributes };
-
-                socket.send(
-                    JSON.stringify({
-                        corrected_audio: currTranscript,
-                        attributes: state.currAttributes,
-                    })
-                );
-            } catch (e) {
-                console.error("Transcription processing error:", e);
-                socket.send(JSON.stringify({ error: "transcription-failed" }));
+                tokenPayload = verifyWSToken(startMsg.token);
+            } catch (err) {
+                console.warn("[app] Invalid token:", err instanceof Error ? err.message : err);
+                socket.send(JSON.stringify({
+                    type: "error",
+                    code: "invalid-token",
+                    message: "Session token is invalid or expired. Please refresh the page.",
+                }));
+                socket.close(1008, "Invalid token");
+                return;
             }
-        });
+
+            // Token mode must match payload mode (prevent mode-switching attacks)
+            if (tokenPayload.mode !== startMsg.mode) {
+                socket.send(JSON.stringify({
+                    type: "error",
+                    code: "mode-mismatch",
+                    message: "Token mode does not match requested mode.",
+                }));
+                socket.close(1008, "Mode mismatch");
+                return;
+            }
+
+            // Token is valid — mark authenticated and clear the auth timeout
+            authenticated = true;
+            clearTimeout(authTimeout);
+
+            console.log(`[app] Authenticated — userId: ${tokenPayload.userId}, mode: ${startMsg.mode}`);
+
+            if (!startMsg.mode) {
+                socket.send(JSON.stringify({
+                    type: "error",
+                    code: "missing-mode",
+                    message: "start payload must include 'mode': 'forms' | 'notes'",
+                }));
+                return;
+            }
+
+            // Clean up previous handler if reconnecting mid-session
+            if (handler) {
+                handler.onClose();
+                handler = null;
+            }
+
+            switch (startMsg.mode) {
+                case "forms":
+                    handler = new FormFillHandler(socket);
+                    break;
+                case "notes":
+                    handler = new NotesHandler(socket);
+                    break;
+                default:
+                    socket.send(JSON.stringify({
+                        type: "error",
+                        code: "unknown-mode",
+                        message: `Unknown mode "${(startMsg as { mode: string }).mode}". Use 'forms' or 'notes'.`,
+                    }));
+                    return;
+            }
+
+            try {
+                await handler.onStart(startMsg);
+            } catch (err) {
+                console.error("[app] Handler onStart error:", err);
+                socket.send(JSON.stringify({ type: "error", code: "bad-start-payload" }));
+                handler = null;
+            }
+            return;
+        }
+
+        // ── stop ──────────────────────────────────────────────────────────
+        if (msg.action === "stop") {
+            if (!handler || !authenticated) {
+                console.warn("[app] Received stop with no active authenticated handler");
+                socket.send(JSON.stringify({ type: "error", code: "no-active-session" }));
+                return;
+            }
+
+            try {
+                await handler.onStop();
+            } catch (err) {
+                console.error("[app] Handler onStop error:", err);
+                socket.send(JSON.stringify({ type: "error", code: "stop-failed" }));
+            }
+            return;
+        }
+
+        // Unknown action
+        socket.send(JSON.stringify({
+            type: "error",
+            code: "unknown-action",
+            message: `Unknown action "${(msg as { action: string }).action}"`,
+        }));
     });
 
+    // ── Cleanup on disconnect ───────────────────────────────────────────────
     socket.on("close", () => {
-        console.log("Client disconnected, cleaning up resources");
-        queue.clear();
+        clearTimeout(authTimeout);
+        console.log("Client disconnected, cleaning up");
+        if (handler) {
+            handler.onClose();
+            handler = null;
+        }
+    });
+
+    socket.on("error", (err) => {
+        clearTimeout(authTimeout);
+        console.error("Socket error:", err);
+        if (handler) {
+            handler.onClose();
+            handler = null;
+        }
     });
 });

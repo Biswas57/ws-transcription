@@ -1,4 +1,4 @@
-import { FieldDef } from "./util.js";
+import { FieldDef } from "./types.js";
 import { encoding_for_model } from "@dqbd/tiktoken";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
@@ -86,6 +86,54 @@ EXTRACTION RULES:
 Return ONLY a pure JSON object: {"finalAttributes": {"snake_case_key": "value", ...}}
 Every key in allowed_keys must appear. No markdown, no code fences, no extra keys.`;
 
+const NOTES_INCREMENTAL_SYS_TXT = `\
+You are a live note-taking scribe in an Australian professional context \
+(clinical, meetings, social work, HR).
+
+You are given:
+1. note_style — the style/context of notes (clinical, meeting, study, general)
+2. sections — optional section headings to organise notes under (may be empty)
+3. current_notes — the notes accumulated so far (may be empty on first chunk)
+4. transcript_segment — a new revised transcript segment to incorporate
+
+YOUR TASK:
+- Read the new transcript segment carefully.
+- Update current_notes by appending new information and/or refining existing content.
+- Do NOT remove or overwrite existing content unless correcting an obvious transcription error.
+- If sections are provided, organise all content under those headings using ## markdown headings.
+- Use clear, professional markdown: ## headings, - bullet points, **bold** for key facts.
+- Be concise — notes capture decisions, facts, and key details; they are not a transcript.
+- Write in third person or impersonal style appropriate to the note_style.
+  clinical: "Patient reports...", "Denies...", "History of..."
+  meeting: "Team agreed...", "Action: ...", "Decision: ..."
+  study: "Key concept: ...", "Note: ..."
+  general: flexible prose with bullet structure
+
+Return ONLY valid JSON: {"notesMarkdown": "<full updated notes as a markdown string>"}
+No markdown fences, no extra keys.`;
+
+const NOTES_FINAL_SYS_TXT = `\
+You are a professional note editor in an Australian context \
+(clinical, meetings, social work, HR).
+
+You are given:
+1. note_style — the style/context of notes
+2. sections — optional section headings
+3. current_notes — notes accumulated during the session
+4. full_transcript — the complete revised transcript
+
+YOUR TASK:
+- Produce a final, polished version of the notes.
+- Fill any gaps missed during live note-taking by re-reading the full transcript.
+- Correct errors or inconsistencies.
+- If sections are provided, ensure every section heading is present.
+  Add "N/A" under any section with no relevant content.
+- Maintain professional tone and clear markdown structure.
+- Do NOT invent information not present in the transcript.
+
+Return ONLY valid JSON: {"notesMarkdown": "<final polished notes as a markdown string>"}
+No markdown fences, no extra keys.`;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function countTokens(text: string): number {
@@ -93,7 +141,6 @@ function countTokens(text: string): number {
 }
 
 // Truncate transcript intelligently — keep start and end, drop middle if needed
-// This preserves names/DOB (usually early) and most recent info (usually late).
 function truncateTranscript(text: string, maxChars: number): string {
     if (text.length <= maxChars) return text;
     const half = Math.floor(maxChars / 2);
@@ -102,29 +149,14 @@ function truncateTranscript(text: string, maxChars: number): string {
     return `${start}\n\n[... middle section omitted for length ...]\n\n${end}`;
 }
 
-/**
- * Canonical key format: lowercase snake_case.
- * "Date of Birth" → "date_of_birth", "chief-complaint" → "chief_complaint"
- * Applied to all GPT output keys before merging into state.
- */
 function normalizeKey(key: string): string {
     return key.trim().toLowerCase().replace(/[\s\-]+/g, "_");
 }
 
-/**
- * Extract the flat list of allowed snake_case keys from a FieldDef template.
- * This is passed to GPT so it knows the exact allowed key set.
- */
 function allowedKeySet(template: FieldDef[]): string[] {
     return template.map((f) => normalizeKey(f.field_name));
 }
 
-/**
- * Filter and normalize GPT output keys.
- * - Normalizes each returned key to snake_case
- * - Drops any key not in the allowed set (with a warning)
- * - Drops empty / "N/A" values
- */
 function filterAndNormalizeOutput(
     raw: Record<string, string>,
     allowed: Set<string>,
@@ -144,21 +176,12 @@ function filterAndNormalizeOutput(
     return result;
 }
 
-// ─── Exported functions ───────────────────────────────────────────────────────
+// ─── Form fill exports (unchanged) ───────────────────────────────────────────
 
-/**
- * Revise a raw Whisper transcription for accuracy.
- * Always runs — skipping based on surface heuristics causes missed corrections
- * on proper nouns, medical terms, and Australian place names.
- */
 export async function reviseTranscription(rawText: string): Promise<string> {
-    // Only skip truly trivial inputs
-    if (rawText.trim().length < 15) {
-        return rawText;
-    }
+    if (rawText.trim().length < 15) return rawText;
 
     const inputTokens = countTokens(rawText);
-    // Output can be slightly longer than input due to corrections adding clarity
     const maxOutputTokens = Math.max(256, Math.ceil(inputTokens * 1.3));
 
     const completion = await openai.chat.completions.create({
@@ -173,18 +196,12 @@ export async function reviseTranscription(rawText: string): Promise<string> {
     });
 
     const content = completion.choices?.[0]?.message?.content;
-    if (!content) {
-        console.warn("[revise] Empty response, using original");
-        return rawText;
-    }
+    if (!content) { console.warn("[revise] Empty response, using original"); return rawText; }
 
     try {
         const parsed = JSON.parse(content) as { correctedText?: string };
         const revised = parsed.correctedText?.trim();
-        if (!revised) {
-            console.warn("[revise] Missing correctedText key, using original");
-            return rawText;
-        }
+        if (!revised) { console.warn("[revise] Missing correctedText key, using original"); return rawText; }
         console.log(`[revise] ${rawText.length} → ${revised.length} chars`);
         return revised;
     } catch {
@@ -193,30 +210,21 @@ export async function reviseTranscription(rawText: string): Promise<string> {
     }
 }
 
-/**
- * Incrementally extract attributes from a transcript segment.
- * No keyword gate — field names are semantic labels, not literal phrases.
- * GPT is given the exact allowed key list to prevent key format drift.
- */
 export async function extractAttributesFromText(
     correctedText: string,
     template: FieldDef[],
     currAttributes: Record<string, string>
 ): Promise<Record<string, string>> {
-    if (correctedText.trim().length < 20 || template.length === 0) {
-        return {};
-    }
+    if (correctedText.trim().length < 20 || template.length === 0) return {};
 
     const allowed = allowedKeySet(template);
     const allowedSet = new Set(allowed);
 
-    // Normalize current attribute keys before sending so GPT sees canonical keys
     const normalizedCurrent: Record<string, string> = {};
     for (const [k, v] of Object.entries(currAttributes)) {
         normalizedCurrent[normalizeKey(k)] = v;
     }
 
-    // Token budget: enough for a complete sparse JSON response
     const maxOutputTokens = Math.max(512, template.length * 60);
 
     const completion = await openai.chat.completions.create({
@@ -238,16 +246,13 @@ export async function extractAttributesFromText(
     });
 
     const content = completion.choices?.[0]?.message?.content;
-    if (!content) {
-        console.warn("[extract] Empty response");
-        return {};
-    }
+    if (!content) { console.warn("[extract] Empty response"); return {}; }
 
     try {
         const parsed = JSON.parse(content) as { parsedAttributes?: Record<string, string> };
         const raw = parsed.parsedAttributes ?? {};
         const cleaned = filterAndNormalizeOutput(raw, allowedSet, "extract");
-        console.log(`[extract] Got ${Object.keys(cleaned).length}/${template.length} fields from ${correctedText.length} chars`);
+        console.log(`[extract] Got ${Object.keys(cleaned).length}/${template.length} fields`);
         return cleaned;
     } catch (err) {
         console.warn("[extract] JSON parse failed:", err);
@@ -255,12 +260,6 @@ export async function extractAttributesFromText(
     }
 }
 
-/**
- * Final verification pass over the complete transcript.
- * Uses gpt-4o for highest accuracy. Keeps start+end of long transcripts
- * so early details (name, DOB) aren't discarded.
- * GPT is given the exact allowed key list to prevent key format drift.
- */
 export async function parseFinalAttributes(
     fullTranscript: string,
     template: FieldDef[],
@@ -273,18 +272,13 @@ export async function parseFinalAttributes(
 
     const allowed = allowedKeySet(template);
     const allowedSet = new Set(allowed);
-
-    // Keep up to ~6000 chars using start+end strategy so nothing critical is lost.
-    // Critically: the start is preserved for names/DOB/address stated early.
     const truncated = truncateTranscript(fullTranscript, 6000);
 
-    // Normalize candidate attribute keys before sending
     const normalizedCandidates: Record<string, string> = {};
     for (const [k, v] of Object.entries(candidateAttributes)) {
         normalizedCandidates[normalizeKey(k)] = v;
     }
 
-    // Token budget: every field must have a value in the dense response
     const maxOutputTokens = Math.max(1024, template.length * 80);
 
     try {
@@ -307,31 +301,22 @@ export async function parseFinalAttributes(
         });
 
         const content = completion.choices?.[0]?.message?.content;
-        if (!content) {
-            console.warn("[final] Empty response, returning candidates");
-            return candidateAttributes;
-        }
+        if (!content) { console.warn("[final] Empty response, returning candidates"); return candidateAttributes; }
 
         const parsed = JSON.parse(content) as { finalAttributes?: Record<string, string> };
         const raw = parsed.finalAttributes ?? {};
-
-        // Start from normalized candidates so no existing values are lost
         const merged = { ...normalizedCandidates };
         let updatedCount = 0;
 
         for (const [rawKey, value] of Object.entries(raw)) {
             const key = normalizeKey(rawKey);
             if (!allowedSet.has(key)) {
-                console.warn(`[final] Dropping unknown key "${rawKey}" (normalized: "${key}")`);
+                console.warn(`[final] Dropping unknown key "${rawKey}"`);
                 continue;
             }
             if (value && value !== "N/A" && value.trim() !== "") {
-                if (merged[key] !== value) {
-                    merged[key] = value;
-                    updatedCount++;
-                }
+                if (merged[key] !== value) { merged[key] = value; updatedCount++; }
             }
-            // "N/A" → leave the existing candidate value intact rather than blanking it
         }
 
         console.log(`[final] gpt-4o pass complete. Updated ${updatedCount} fields.`);
@@ -339,5 +324,124 @@ export async function parseFinalAttributes(
     } catch (err) {
         console.error("[final] Error:", err);
         return candidateAttributes;
+    }
+}
+
+// ─── Notes exports (new) ──────────────────────────────────────────────────────
+
+/**
+ * Incrementally update markdown notes with a new transcript segment.
+ * Runs on the same cadence as extractAttributesFromText.
+ * Uses gpt-4o-mini for speed — this is a live/streaming operation.
+ */
+export async function generateNotesIncremental(
+    transcriptSegment: string,
+    currentNotes: string,
+    noteStyle: string,
+    sections: string[]
+): Promise<string> {
+    if (transcriptSegment.trim().length < 20) return currentNotes;
+
+    const inputTokens = countTokens(transcriptSegment) + countTokens(currentNotes);
+    // Notes output can be longer than input since we're accumulating
+    const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.5));
+
+    const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+            { role: "system", content: NOTES_INCREMENTAL_SYS_TXT },
+            {
+                role: "user",
+                content: JSON.stringify({
+                    note_style: noteStyle,
+                    sections: sections.length > 0 ? sections : undefined,
+                    current_notes: currentNotes || "",
+                    transcript_segment: transcriptSegment,
+                }),
+            },
+        ],
+        max_tokens: maxOutputTokens,
+        response_format: { type: "json_object" },
+        temperature: 0.1, // slight creativity for natural note writing
+    });
+
+    const content = completion.choices?.[0]?.message?.content;
+    if (!content) {
+        console.warn("[notes-incremental] Empty response, keeping current notes");
+        return currentNotes;
+    }
+
+    try {
+        const parsed = JSON.parse(content) as { notesMarkdown?: string };
+        const updated = parsed.notesMarkdown?.trim();
+        if (!updated) {
+            console.warn("[notes-incremental] Missing notesMarkdown key, keeping current");
+            return currentNotes;
+        }
+        console.log(`[notes-incremental] Notes updated: ${currentNotes.length} → ${updated.length} chars`);
+        return updated;
+    } catch {
+        console.warn("[notes-incremental] JSON parse failed, keeping current notes");
+        return currentNotes;
+    }
+}
+
+/**
+ * Final polished notes pass over the complete transcript.
+ * Runs on stop, same cadence as parseFinalAttributes.
+ * Uses gpt-4o for maximum quality.
+ */
+export async function finalizeNotes(
+    fullTranscript: string,
+    currentNotes: string,
+    noteStyle: string,
+    sections: string[]
+): Promise<string> {
+    if (fullTranscript.trim().length < 30) {
+        console.log("[notes-final] Transcript too short, returning current notes");
+        return currentNotes;
+    }
+
+    const truncated = truncateTranscript(fullTranscript, 6000);
+    const inputTokens = countTokens(truncated) + countTokens(currentNotes);
+    const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.2));
+
+    try {
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                { role: "system", content: NOTES_FINAL_SYS_TXT },
+                {
+                    role: "user",
+                    content: JSON.stringify({
+                        note_style: noteStyle,
+                        sections: sections.length > 0 ? sections : undefined,
+                        current_notes: currentNotes,
+                        full_transcript: truncated,
+                    }),
+                },
+            ],
+            temperature: 0.1,
+            response_format: { type: "json_object" },
+            max_tokens: maxOutputTokens,
+        });
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) {
+            console.warn("[notes-final] Empty response, returning current notes");
+            return currentNotes;
+        }
+
+        const parsed = JSON.parse(content) as { notesMarkdown?: string };
+        const finalized = parsed.notesMarkdown?.trim();
+        if (!finalized) {
+            console.warn("[notes-final] Missing notesMarkdown key, returning current");
+            return currentNotes;
+        }
+        console.log(`[notes-final] gpt-4o pass complete: ${finalized.length} chars`);
+        return finalized;
+    } catch (err) {
+        console.error("[notes-final] Error:", err);
+        return currentNotes;
     }
 }

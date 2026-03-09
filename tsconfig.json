@@ -13,7 +13,7 @@
         "transcription.ts",
         "parse-gpt.ts",
         "parse-groq.ts",
-        "util.ts",
+        "types.ts",
         "transcript-cache.ts",
         "audio-cache.ts",
         "test/**/*.ts"
