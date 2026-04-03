@@ -8,7 +8,12 @@ import {
     makeAudioState,
 } from "../types.js";
 import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "../types.js";
-import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap } from "../transcription.js";
+import {
+    checkWebMIntegrity,
+    extractWebMInitSegment,
+    runWhisperOnBuffer,
+    appendWithOverlap,
+} from "../transcription.js";
 import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "../parse-gpt.js";
 
 function normalizeKey(key: string): string {
@@ -16,11 +21,13 @@ function normalizeKey(key: string): string {
 }
 
 export class FormFillHandler implements TranscriptionHandler {
-    private state: FormFillState;
+    private st: FormFillState;
     private queue: PQueue;
+    private passCount = 0;
+    private sessionStartedAt = 0;
 
-    constructor(private socket: WebSocket) {
-        this.state = {
+    constructor(private socket: WebSocket, private sessionId: string) {
+        this.st = {
             ...makeAudioState(),
             template: [],
             currAttributes: {},
@@ -31,134 +38,172 @@ export class FormFillHandler implements TranscriptionHandler {
     async onStart(payload: StartPayload): Promise<void> {
         if (payload.mode !== "forms") return;
 
-        this.state.template = [];
-        this.state.currAttributes = {};
+        this.st.template = [];
+        this.st.currAttributes = {};
+        this.passCount = 0;
+        this.sessionStartedAt = Date.now();
 
         for (const blockName of Object.keys(payload.blocks ?? {})) {
             const fields = payload.blocks[blockName];
             if (!Array.isArray(fields)) continue;
-
             for (const field of fields) {
                 const name = String(field);
-                this.state.template.push({ block_name: blockName, field_name: name });
-                this.state.currAttributes[normalizeKey(name)] = "";
+                this.st.template.push({ block_name: blockName, field_name: name });
+                this.st.currAttributes[normalizeKey(name)] = "";
             }
         }
 
+        console.log(`[${this.sessionId}][forms] Session start — ${this.st.template.length} fields across ${Object.keys(payload.blocks ?? {}).length} blocks`);
         this.send({ type: "started", mode: "forms" });
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
-        const state = this.state;
+        const st = this.st;
 
-        if (state.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
-            console.warn("[FormFill] Audio buffer limit exceeded, dropping chunk");
+        if (st.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
+            console.warn(`[${this.sessionId}][forms] Audio buffer overflow — dropping chunk`);
             this.send({ type: "error", code: "audio-buffer-overflow" });
             return;
         }
 
-        if (!state.webmHeader && checkWebMIntegrity(chunk)) {
-            state.webmHeader = chunk;
+        if (!st.webmHeader && checkWebMIntegrity(chunk)) {
+            st.webmHeader = extractWebMInitSegment(chunk);
         }
 
-        state.audioBuffer = Buffer.concat([state.audioBuffer, chunk]);
-        state.nchunks++;
+        st.audioBuffer = Buffer.concat([st.audioBuffer, chunk]);
+        st.nchunks++;
 
-        if (state.nchunks < MIN_CHUNK_NUM) return;
+        if (st.nchunks < MIN_CHUNK_NUM) return;
 
-        if (!checkWebMIntegrity(state.audioBuffer) && state.webmHeader) {
-            state.audioBuffer = Buffer.concat([state.webmHeader, state.audioBuffer]);
+        if (!checkWebMIntegrity(st.audioBuffer) && st.webmHeader) {
+            st.audioBuffer = Buffer.concat([st.webmHeader, st.audioBuffer]);
         }
 
-        // Snapshot + reset
-        const captureBuffer = state.audioBuffer;
-        state.audioBuffer = Buffer.alloc(0);
-        state.nchunks = 0;
+        const captureBuffer = st.audioBuffer;
+        const captureSize = captureBuffer.length;
+        st.audioBuffer = Buffer.alloc(0);
+        st.nchunks = 0;
+        const passNum = ++this.passCount;
 
         this.queue.add(async () => {
+            const passStart = Date.now();
+            console.log(`[${this.sessionId}][forms] Pass ${passNum} start — buffer: ${captureSize} bytes`);
+
             try {
+                // Stage 1: Whisper
+                const t0 = Date.now();
                 const transcription = await runWhisperOnBuffer(captureBuffer);
+                console.log(`[${this.sessionId}][forms] Pass ${passNum} — whisper: ${Date.now() - t0}ms, chars: ${transcription.length}`);
+
+                // Stage 2: Revision
+                const t1 = Date.now();
                 const revised = await reviseTranscription(transcription);
+                console.log(`[${this.sessionId}][forms] Pass ${passNum} — revise: ${Date.now() - t1}ms`);
 
                 const wordCount = revised.trim().split(/\s+/).length;
                 if (wordCount < MIN_WORD_COUNT) {
-                    console.log(`[FormFill] Too short (${wordCount} words), skipping`);
+                    console.log(`[${this.sessionId}][forms] Pass ${passNum} — too short (${wordCount} words), skipping`);
                     return;
                 }
 
-                const prevSize = state.currTranscriptSize;
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, revised);
-                const window = state.transcript.slice(-(prevSize + state.currTranscriptSize));
+                const prevSize = st.currTranscriptSize;
+                [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
+                const window = st.transcript.slice(-(prevSize + st.currTranscriptSize));
 
-                const extracted = await extractAttributesFromText(window, state.template, state.currAttributes);
-                state.currAttributes = { ...state.currAttributes, ...extracted };
+                // Stage 3: Attribute extraction
+                const t2 = Date.now();
+                const extracted = await extractAttributesFromText(window, st.template, st.currAttributes);
+                st.currAttributes = { ...st.currAttributes, ...extracted };
+                const extractMs = Date.now() - t2;
+                const e2eMs = Date.now() - passStart;
 
-                this.send({
-                    type: "attributes_update",
-                    attributes: state.currAttributes,
-                });
+                const newFields = Object.keys(extracted).length;
+                console.log(
+                    `[${this.sessionId}][forms] Pass ${passNum} complete — ` +
+                    `extract: ${extractMs}ms (${newFields} fields updated), e2e: ${e2eMs}ms`
+                );
+
+                this.send({ type: "attributes_update", attributes: st.currAttributes });
+
             } catch (e) {
-                console.error("[FormFill] Processing error:", e);
+                console.error(`[${this.sessionId}][forms] Pass ${passNum} failed after ${Date.now() - passStart}ms:`, e);
                 this.send({ type: "error", code: "transcription-failed" });
             }
         });
     }
 
     async onStop(): Promise<void> {
+        const stopStart = Date.now();
+        const st = this.st;
+        console.log(`[${this.sessionId}][forms] Stop received — draining queue`);
+
         await this.queue.onIdle();
 
-        const state = this.state;
-        let remaining = state.audioBuffer;
+        let remaining = st.audioBuffer;
 
         if (remaining.length === 0) {
-            this.send({
-                type: "final_attributes",
-                attributes: state.currAttributes,
-            });
+            console.log(`[${this.sessionId}][forms] No remaining audio — running final extraction`);
+            await this.runFinalExtraction(stopStart);
             return;
         }
 
-        if (!checkWebMIntegrity(remaining) && state.webmHeader) {
-            remaining = Buffer.concat([state.webmHeader, remaining]);
+        if (!checkWebMIntegrity(remaining) && st.webmHeader) {
+            remaining = Buffer.concat([st.webmHeader, remaining]);
         }
-
-        // Clear immediately
-        state.audioBuffer = Buffer.alloc(0);
-        state.nchunks = 0;
-        state.webmHeader = null;
+        st.audioBuffer = Buffer.alloc(0);
+        st.nchunks = 0;
+        st.webmHeader = null;
 
         try {
+            const t0 = Date.now();
             const raw = await runWhisperOnBuffer(remaining);
-            const wordCount = raw.trim().split(/\s+/).length;
+            console.log(`[${this.sessionId}][forms] Final whisper (remaining): ${Date.now() - t0}ms`);
 
+            const wordCount = raw.trim().split(/\s+/).length;
             if (wordCount >= MIN_WORD_COUNT) {
                 const revised = await reviseTranscription(raw);
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, revised);
+                [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
             }
+        } catch (err) {
+            console.error(`[${this.sessionId}][forms] Error on remaining audio:`, err);
+        }
 
-            state.currAttributes = await parseFinalAttributes(
-                state.transcript,
-                state.template,
-                state.currAttributes
+        await this.runFinalExtraction(stopStart);
+    }
+
+    private async runFinalExtraction(stopStart: number): Promise<void> {
+        const st = this.st;
+        console.log(`[${this.sessionId}][forms] Final extraction — transcript: ${st.transcript.length} chars, ${st.template.length} fields`);
+        const t0 = Date.now();
+
+        try {
+            st.currAttributes = await parseFinalAttributes(
+                st.transcript,
+                st.template,
+                st.currAttributes
             );
 
-            console.log(`[FormFill] Final: ${state.transcript.length} chars, ${Object.keys(state.currAttributes).length} fields`);
+            const finalMs = Date.now() - t0;
+            const stopMs = Date.now() - stopStart;
+            const sessionMs = Date.now() - this.sessionStartedAt;
 
-            this.send({
-                type: "final_attributes",
-                attributes: state.currAttributes,
-            });
-        } catch (error) {
-            console.error("[FormFill] Final processing error:", error);
-            this.send({
-                type: "final_attributes",
-                attributes: state.currAttributes,
-            });
+            console.log(
+                `[${this.sessionId}][forms] Final complete — ` +
+                `parseFinal: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
+                `session: ${Math.round(sessionMs / 1000)}s, ` +
+                `fields: ${Object.keys(st.currAttributes).length}`
+            );
+
+            this.send({ type: "final_attributes", attributes: st.currAttributes });
+        } catch (err) {
+            console.error(`[${this.sessionId}][forms] Final extraction error:`, err);
+            this.send({ type: "final_attributes", attributes: st.currAttributes });
         }
     }
 
     onClose(): void {
         this.queue.clear();
+        console.log(`[${this.sessionId}][forms] Handler closed`);
     }
 
     private send(msg: object): void {

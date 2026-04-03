@@ -2,55 +2,70 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { WebSocket, WebSocketServer } from "ws";
-import { MAX_AUDIO_BUFFER_SIZE } from "./types.js";
 import { TranscriptionHandler, StartPayload, InboundMessage } from "./types.js";
 import { FormFillHandler } from "./handlers/FormFillHandler.js";
 import { NotesHandler } from "./handlers/NotesHandler.js";
 import { verifyWSToken } from "./ws-token.js";
 
 const wss = new WebSocketServer({ port: 5551 });
-console.log(`WebSocket server listening on ws://0.0.0.0:5551`);
+console.log(`[app] WebSocket server listening on ws://0.0.0.0:5551`);
 
-// ── Optional: origin check ─────────────────────────────────────────────────
-// Set ALLOWED_ORIGIN in .env to restrict connections to your web app only.
-// e.g. ALLOWED_ORIGIN=https://formify-webapp.vercel.app
-// Leave unset to allow all origins (useful for local dev).
+// ── Optional: origin check ──────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
 
+// ── Simple monotonic session counter for log correlation ───────────────────
+// Each accepted connection gets a short ID so logs from concurrent sessions
+// are attributable without logging any PII.
+let sessionCounter = 0;
+function nextSessionId(): string {
+    return `s${(++sessionCounter).toString().padStart(4, "0")}`;
+}
+
 wss.on("connection", (socket: WebSocket, req) => {
+    const sessionId = nextSessionId();
+    const connectedAt = Date.now();
+
     // ── Origin check (optional but recommended in production) ───────────────
     if (ALLOWED_ORIGIN) {
         const origin = req.headers.origin ?? "";
         if (origin !== ALLOWED_ORIGIN) {
-            console.warn(`[app] Rejected connection from origin: ${origin}`);
+            console.warn(`[${sessionId}] Rejected origin: ${origin}`);
             socket.close(1008, "Origin not allowed");
             return;
         }
     }
 
-    console.log("new client connected");
+    console.log(`[${sessionId}] Connection opened`);
 
     // ── Per-connection state ────────────────────────────────────────────────
-    // Before a valid "start" is received, handler is null and the connection
-    // will not process any audio or commands.
     let handler: TranscriptionHandler | null = null;
     let authenticated = false;
 
-    // Safety: auto-close connections that never authenticate within 30s
+    // ── Idle-auth timeout ───────────────────────────────────────────────────
+    // Pre-connected sockets that never send a "start" (e.g. page open but user
+    // hasn't pressed record yet) should not be forcefully closed — that produces
+    // misleading disconnect UX. We give 5 minutes of idle patience before cleanup.
+    //
+    // This is safe: the JWT token is minted at record time (120s TTL) and
+    // verified on "start", so a 5-min idle window doesn't grant any extra
+    // auth window. The token check is still the enforcement point.
+    const IDLE_AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 min
+
     const authTimeout = setTimeout(() => {
         if (!authenticated) {
-            console.warn("[app] Connection timed out waiting for authenticated start");
-            socket.close(1008, "Authentication timeout");
+            const idleMs = Date.now() - connectedAt;
+            console.log(`[${sessionId}] Closing idle unauthenticated connection after ${idleMs}ms`);
+            socket.close(1001, "Idle timeout — no session started");
         }
-    }, 30_000);
+    }, IDLE_AUTH_TIMEOUT_MS);
 
     // ── Message routing ─────────────────────────────────────────────────────
     socket.on("message", async (data, isBinary) => {
 
-        // Binary frame → audio chunk (only allowed after authenticated start)
+        // Binary frame → audio chunk
         if (isBinary) {
             if (!handler || !authenticated) {
-                console.warn("[app] Audio chunk received before authenticated start — ignoring");
+                console.warn(`[${sessionId}] Audio before auth — ignoring`);
                 return;
             }
             const chunk = Buffer.from(data as Buffer);
@@ -67,11 +82,13 @@ wss.on("connection", (socket: WebSocket, req) => {
             return;
         }
 
-        // ── start ─────────────────────────────────────────────────────────
+        // ── start ────────────────────────────────────────────────────────
         if (msg.action === "start") {
             const startMsg = msg as StartPayload & { token?: string };
+            const authStart = Date.now();
 
-            // ── Token validation ─────────────────────────────────────────
+            console.log(`[${sessionId}] start received — mode: ${startMsg.mode}`);
+
             if (!startMsg.token) {
                 socket.send(JSON.stringify({
                     type: "error",
@@ -86,7 +103,7 @@ wss.on("connection", (socket: WebSocket, req) => {
             try {
                 tokenPayload = verifyWSToken(startMsg.token);
             } catch (err) {
-                console.warn("[app] Invalid token:", err instanceof Error ? err.message : err);
+                console.warn(`[${sessionId}] Token invalid:`, err instanceof Error ? err.message : err);
                 socket.send(JSON.stringify({
                     type: "error",
                     code: "invalid-token",
@@ -96,7 +113,6 @@ wss.on("connection", (socket: WebSocket, req) => {
                 return;
             }
 
-            // Token mode must match payload mode (prevent mode-switching attacks)
             if (tokenPayload.mode !== startMsg.mode) {
                 socket.send(JSON.stringify({
                     type: "error",
@@ -107,22 +123,12 @@ wss.on("connection", (socket: WebSocket, req) => {
                 return;
             }
 
-            // Token is valid — mark authenticated and clear the auth timeout
             authenticated = true;
             clearTimeout(authTimeout);
 
-            console.log(`[app] Authenticated — userId: ${tokenPayload.userId}, mode: ${startMsg.mode}`);
+            const authMs = Date.now() - authStart;
+            console.log(`[${sessionId}] Auth OK — userId: ${tokenPayload.userId}, mode: ${startMsg.mode}, auth: ${authMs}ms`);
 
-            if (!startMsg.mode) {
-                socket.send(JSON.stringify({
-                    type: "error",
-                    code: "missing-mode",
-                    message: "start payload must include 'mode': 'forms' | 'notes'",
-                }));
-                return;
-            }
-
-            // Clean up previous handler if reconnecting mid-session
             if (handler) {
                 handler.onClose();
                 handler = null;
@@ -130,10 +136,10 @@ wss.on("connection", (socket: WebSocket, req) => {
 
             switch (startMsg.mode) {
                 case "forms":
-                    handler = new FormFillHandler(socket);
+                    handler = new FormFillHandler(socket, sessionId);
                     break;
                 case "notes":
-                    handler = new NotesHandler(socket);
+                    handler = new NotesHandler(socket, sessionId);
                     break;
                 default:
                     socket.send(JSON.stringify({
@@ -147,31 +153,29 @@ wss.on("connection", (socket: WebSocket, req) => {
             try {
                 await handler.onStart(startMsg);
             } catch (err) {
-                console.error("[app] Handler onStart error:", err);
+                console.error(`[${sessionId}] Handler onStart error:`, err);
                 socket.send(JSON.stringify({ type: "error", code: "bad-start-payload" }));
                 handler = null;
             }
             return;
         }
 
-        // ── stop ──────────────────────────────────────────────────────────
+        // ── stop ─────────────────────────────────────────────────────────
         if (msg.action === "stop") {
             if (!handler || !authenticated) {
-                console.warn("[app] Received stop with no active authenticated handler");
+                console.warn(`[${sessionId}] stop with no active session`);
                 socket.send(JSON.stringify({ type: "error", code: "no-active-session" }));
                 return;
             }
-
             try {
                 await handler.onStop();
             } catch (err) {
-                console.error("[app] Handler onStop error:", err);
+                console.error(`[${sessionId}] Handler onStop error:`, err);
                 socket.send(JSON.stringify({ type: "error", code: "stop-failed" }));
             }
             return;
         }
 
-        // Unknown action
         socket.send(JSON.stringify({
             type: "error",
             code: "unknown-action",
@@ -179,10 +183,10 @@ wss.on("connection", (socket: WebSocket, req) => {
         }));
     });
 
-    // ── Cleanup on disconnect ───────────────────────────────────────────────
-    socket.on("close", () => {
+    socket.on("close", (code, reason) => {
         clearTimeout(authTimeout);
-        console.log("Client disconnected, cleaning up");
+        const lifetimeMs = Date.now() - connectedAt;
+        console.log(`[${sessionId}] Closed — code: ${code}, lifetime: ${lifetimeMs}ms, reason: ${reason.toString() || "(none)"}`);
         if (handler) {
             handler.onClose();
             handler = null;
@@ -191,7 +195,7 @@ wss.on("connection", (socket: WebSocket, req) => {
 
     socket.on("error", (err) => {
         clearTimeout(authTimeout);
-        console.error("Socket error:", err);
+        console.error(`[${sessionId}] Socket error:`, err.message);
         if (handler) {
             handler.onClose();
             handler = null;

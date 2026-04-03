@@ -5,12 +5,13 @@ export interface CostTracker {
     totalEstimatedCost: number;
 }
 
-// Rough cost estimates (as of 2024 - should be updated regularly)
+// Rough cost estimates from the current OpenAI model pricing page (updated 2026-04)
 const PRICING = {
     'whisper-1': 0.006, // per minute
-    'gpt-4o-mini': 0.00015, // per 1K tokens (input) + 0.0006 (output)
-    'gpt-4o': 0.005, // per 1K tokens (input) + 0.015 (output)
-    'gpt-4.1': 0.01, // per 1K tokens (rough estimate)
+    'gpt-5.4-mini-input': 0.00075, // $0.75 / 1M input tokens
+    'gpt-5.4-mini-output': 0.0045, // $4.50 / 1M output tokens
+    'gpt-5.4-input': 0.0025, // $2.50 / 1M input tokens
+    'gpt-5.4-output': 0.015, // $15.00 / 1M output tokens
 };
 
 const costTracker: CostTracker = {
@@ -33,12 +34,16 @@ export function trackGPTCall(model: string, inputTokens: number, outputTokens: n
     costTracker.gptCalls.push({ model, tokens: inputTokens + outputTokens });
 
     let cost = 0;
-    if (model.includes('gpt-4o-mini')) {
-        cost = (inputTokens * 0.00015 + outputTokens * 0.0006) / 1000;
-    } else if (model.includes('gpt-4o')) {
-        cost = (inputTokens * 0.005 + outputTokens * 0.015) / 1000;
-    } else if (model.includes('gpt-4.1')) {
-        cost = (inputTokens + outputTokens) * 0.01 / 1000;
+    if (model.includes('gpt-5.4-mini')) {
+        cost = (
+            inputTokens * PRICING['gpt-5.4-mini-input'] +
+            outputTokens * PRICING['gpt-5.4-mini-output']
+        ) / 1000;
+    } else if (model.includes('gpt-5.4')) {
+        cost = (
+            inputTokens * PRICING['gpt-5.4-input'] +
+            outputTokens * PRICING['gpt-5.4-output']
+        ) / 1000;
     }
 
     costTracker.totalEstimatedCost += cost;

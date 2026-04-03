@@ -11,6 +11,21 @@ export function checkWebMIntegrity(data: Buffer): boolean {
     return data.length >= 4 && data.readUInt32BE(0) === 0x1a45dfa3;
 }
 
+export function extractWebMInitSegment(data: Buffer): Buffer | null {
+    if (!checkWebMIntegrity(data)) {
+        return null;
+    }
+
+    const clusterMarker = Buffer.from([0x1f, 0x43, 0xb6, 0x75]);
+    const clusterOffset = data.indexOf(clusterMarker);
+
+    if (clusterOffset <= 0) {
+        return data;
+    }
+
+    return data.subarray(0, clusterOffset);
+}
+
 export function appendWithOverlap(base: string, addition: string): [string, number] {
     const additionSize = addition.length
     const max = Math.min(base.length, additionSize);

@@ -1,11 +1,15 @@
 import { FieldDef } from "./types.js";
-import { encoding_for_model } from "@dqbd/tiktoken";
+import { get_encoding } from "@dqbd/tiktoken";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const tokenCounter = encoding_for_model("gpt-4o");
+const GPT_MINI_MODEL = "gpt-5.4-mini";
+const GPT_FULL_MODEL = "gpt-5.4";
+const GPT_REASONING_EFFORT = "low" as const;
+// The bundled tiktoken version in this repo does not recognize GPT-5.4 aliases yet.
+const tokenCounter = get_encoding("o200k_base");
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -185,13 +189,14 @@ export async function reviseTranscription(rawText: string): Promise<string> {
     const maxOutputTokens = Math.max(256, Math.ceil(inputTokens * 1.3));
 
     const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: GPT_MINI_MODEL,
         messages: [
             { role: "system", content: REVISE_SYS_TXT },
             { role: "user", content: rawText },
         ],
-        max_tokens: maxOutputTokens,
+        max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
+        reasoning_effort: GPT_REASONING_EFFORT,
         temperature: 0.0,
     });
 
@@ -228,7 +233,7 @@ export async function extractAttributesFromText(
     const maxOutputTokens = Math.max(512, template.length * 60);
 
     const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: GPT_MINI_MODEL,
         messages: [
             { role: "system", content: EXTRACT_SYS_TXT },
             {
@@ -240,8 +245,9 @@ export async function extractAttributesFromText(
                 }),
             },
         ],
-        max_tokens: maxOutputTokens,
+        max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
+        reasoning_effort: GPT_REASONING_EFFORT,
         temperature: 0.0,
     });
 
@@ -283,7 +289,7 @@ export async function parseFinalAttributes(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: GPT_FULL_MODEL,
             messages: [
                 { role: "system", content: FINAL_SYS_TXT },
                 {
@@ -297,7 +303,8 @@ export async function parseFinalAttributes(
             ],
             temperature: 0.0,
             response_format: { type: "json_object" },
-            max_tokens: maxOutputTokens,
+            reasoning_effort: GPT_REASONING_EFFORT,
+            max_completion_tokens: maxOutputTokens,
         });
 
         const content = completion.choices?.[0]?.message?.content;
@@ -319,7 +326,7 @@ export async function parseFinalAttributes(
             }
         }
 
-        console.log(`[final] gpt-4o pass complete. Updated ${updatedCount} fields.`);
+        console.log(`[final] ${GPT_FULL_MODEL} pass complete. Updated ${updatedCount} fields.`);
         return merged;
     } catch (err) {
         console.error("[final] Error:", err);
@@ -332,7 +339,7 @@ export async function parseFinalAttributes(
 /**
  * Incrementally update markdown notes with a new transcript segment.
  * Runs on the same cadence as extractAttributesFromText.
- * Uses gpt-4o-mini for speed — this is a live/streaming operation.
+ * Uses gpt-5.4-mini for speed — this is a live/streaming operation.
  */
 export async function generateNotesIncremental(
     transcriptSegment: string,
@@ -347,7 +354,7 @@ export async function generateNotesIncremental(
     const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.5));
 
     const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: GPT_MINI_MODEL,
         messages: [
             { role: "system", content: NOTES_INCREMENTAL_SYS_TXT },
             {
@@ -360,8 +367,9 @@ export async function generateNotesIncremental(
                 }),
             },
         ],
-        max_tokens: maxOutputTokens,
+        max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
+        reasoning_effort: GPT_REASONING_EFFORT,
         temperature: 0.1, // slight creativity for natural note writing
     });
 
@@ -389,7 +397,7 @@ export async function generateNotesIncremental(
 /**
  * Final polished notes pass over the complete transcript.
  * Runs on stop, same cadence as parseFinalAttributes.
- * Uses gpt-4o for maximum quality.
+ * Uses gpt-5.4 for maximum quality.
  */
 export async function finalizeNotes(
     fullTranscript: string,
@@ -408,7 +416,7 @@ export async function finalizeNotes(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: GPT_FULL_MODEL,
             messages: [
                 { role: "system", content: NOTES_FINAL_SYS_TXT },
                 {
@@ -423,7 +431,8 @@ export async function finalizeNotes(
             ],
             temperature: 0.1,
             response_format: { type: "json_object" },
-            max_tokens: maxOutputTokens,
+            reasoning_effort: GPT_REASONING_EFFORT,
+            max_completion_tokens: maxOutputTokens,
         });
 
         const content = completion.choices?.[0]?.message?.content;
@@ -438,7 +447,7 @@ export async function finalizeNotes(
             console.warn("[notes-final] Missing notesMarkdown key, returning current");
             return currentNotes;
         }
-        console.log(`[notes-final] gpt-4o pass complete: ${finalized.length} chars`);
+        console.log(`[notes-final] ${GPT_FULL_MODEL} pass complete: ${finalized.length} chars`);
         return finalized;
     } catch (err) {
         console.error("[notes-final] Error:", err);

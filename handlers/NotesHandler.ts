@@ -7,15 +7,22 @@ import {
     makeAudioState,
 } from "../types.js";
 import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "../types.js";
-import { checkWebMIntegrity, runWhisperOnBuffer, appendWithOverlap } from "../transcription.js";
+import {
+    checkWebMIntegrity,
+    extractWebMInitSegment,
+    runWhisperOnBuffer,
+    appendWithOverlap,
+} from "../transcription.js";
 import { reviseTranscription, generateNotesIncremental, finalizeNotes } from "../parse-gpt.js";
 
 export class NotesHandler implements TranscriptionHandler {
-    private state: NotesState;
+    private st: NotesState;
     private queue: PQueue;
+    private passCount = 0;
+    private sessionStartedAt = 0;
 
-    constructor(private socket: WebSocket) {
-        this.state = {
+    constructor(private socket: WebSocket, private sessionId: string) {
+        this.st = {
             ...makeAudioState(),
             noteStyle: "general",
             sections: [],
@@ -27,138 +34,176 @@ export class NotesHandler implements TranscriptionHandler {
     async onStart(payload: StartPayload): Promise<void> {
         if (payload.mode !== "notes") return;
 
-        this.state.noteStyle = payload.noteStyle ?? "general";
-        this.state.sections = payload.sections ?? [];
-        this.state.currentMarkdown = "";
+        this.st.noteStyle = payload.noteStyle ?? "general";
+        this.st.sections = payload.sections ?? [];
+        this.st.currentMarkdown = "";
+        this.passCount = 0;
+        this.sessionStartedAt = Date.now();
 
-        console.log(`[Notes] Started — style: ${this.state.noteStyle}, sections: [${this.state.sections.join(", ")}]`);
+        // Log resolved config — safe to log (user-chosen config, not transcript content)
+        console.log(
+            `[${this.sessionId}][notes] Session start — ` +
+            `style: "${this.st.noteStyle}", ` +
+            `sections: [${this.st.sections.length > 0 ? this.st.sections.map(s => `"${s}"`).join(", ") : "none"}]`
+        );
+
         this.send({ type: "started", mode: "notes" });
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
-        const state = this.state;
+        const st = this.st;
 
-        if (state.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
-            console.warn("[Notes] Audio buffer limit exceeded, dropping chunk");
+        if (st.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
+            console.warn(`[${this.sessionId}][notes] Audio buffer overflow — dropping chunk`);
             this.send({ type: "error", code: "audio-buffer-overflow" });
             return;
         }
 
-        if (!state.webmHeader && checkWebMIntegrity(chunk)) {
-            state.webmHeader = chunk;
+        if (!st.webmHeader && checkWebMIntegrity(chunk)) {
+            st.webmHeader = extractWebMInitSegment(chunk);
         }
 
-        state.audioBuffer = Buffer.concat([state.audioBuffer, chunk]);
-        state.nchunks++;
+        st.audioBuffer = Buffer.concat([st.audioBuffer, chunk]);
+        st.nchunks++;
 
-        if (state.nchunks < MIN_CHUNK_NUM) return;
+        if (st.nchunks < MIN_CHUNK_NUM) return;
 
-        if (!checkWebMIntegrity(state.audioBuffer) && state.webmHeader) {
-            state.audioBuffer = Buffer.concat([state.webmHeader, state.audioBuffer]);
+        if (!checkWebMIntegrity(st.audioBuffer) && st.webmHeader) {
+            st.audioBuffer = Buffer.concat([st.webmHeader, st.audioBuffer]);
         }
 
-        // Snapshot + reset immediately (same pattern as FormFillHandler)
-        const captureBuffer = state.audioBuffer;
-        state.audioBuffer = Buffer.alloc(0);
-        state.nchunks = 0;
+        // Snapshot + reset so new chunks aren't blocked during async processing
+        const captureBuffer = st.audioBuffer;
+        const captureSize = captureBuffer.length;
+        st.audioBuffer = Buffer.alloc(0);
+        st.nchunks = 0;
+        const passNum = ++this.passCount;
 
         this.queue.add(async () => {
+            const passStart = Date.now();
+            console.log(`[${this.sessionId}][notes] Pass ${passNum} start — buffer: ${captureSize} bytes`);
+
             try {
+                // Stage 1: Whisper transcription
+                const t0 = Date.now();
                 const transcription = await runWhisperOnBuffer(captureBuffer);
+                console.log(`[${this.sessionId}][notes] Pass ${passNum} — whisper: ${Date.now() - t0}ms, chars: ${transcription.length}`);
+
+                // Stage 2: Transcript revision
+                const t1 = Date.now();
                 const revised = await reviseTranscription(transcription);
+                console.log(`[${this.sessionId}][notes] Pass ${passNum} — revise: ${Date.now() - t1}ms`);
 
                 const wordCount = revised.trim().split(/\s+/).length;
                 if (wordCount < MIN_WORD_COUNT) {
-                    console.log(`[Notes] Too short (${wordCount} words), skipping`);
+                    console.log(`[${this.sessionId}][notes] Pass ${passNum} — too short (${wordCount} words), skipping`);
                     return;
                 }
 
-                // Append to session transcript
-                [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, revised);
+                [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
 
-                // Incrementally update notes
-                state.currentMarkdown = await generateNotesIncremental(
+                // Stage 3: Incremental notes generation
+                const t2 = Date.now();
+                st.currentMarkdown = await generateNotesIncremental(
                     revised,
-                    state.currentMarkdown,
-                    state.noteStyle,
-                    state.sections
+                    st.currentMarkdown,
+                    this.st.noteStyle,
+                    this.st.sections
+                );
+                const notesMs = Date.now() - t2;
+                const e2eMs = Date.now() - passStart;
+
+                console.log(
+                    `[${this.sessionId}][notes] Pass ${passNum} complete — ` +
+                    `notes: ${notesMs}ms, e2e: ${e2eMs}ms, output: ${st.currentMarkdown.length} chars`
                 );
 
-                this.send({
-                    type: "notes_update",
-                    notesMarkdown: state.currentMarkdown,
-                });
+                // Stage 4: Outbound send
+                this.send({ type: "notes_update", notesMarkdown: st.currentMarkdown });
+
             } catch (e) {
-                console.error("[Notes] Processing error:", e);
+                console.error(`[${this.sessionId}][notes] Pass ${passNum} failed after ${Date.now() - passStart}ms:`, e);
                 this.send({ type: "error", code: "transcription-failed" });
             }
         });
     }
 
     async onStop(): Promise<void> {
+        const stopStart = Date.now();
+        const st = this.st;
+        console.log(`[${this.sessionId}][notes] Stop received — draining queue (${this.queue.size} queued, ${this.queue.pending} pending)`);
+
         await this.queue.onIdle();
+        console.log(`[${this.sessionId}][notes] Queue drained — ${Date.now() - stopStart}ms`);
 
-        const state = this.state;
-        let remaining = state.audioBuffer;
+        let remaining = st.audioBuffer;
 
-        // Process any remaining buffered audio first
+        // Process any audio buffered after the last incremental pass
         if (remaining.length > 0) {
-            if (!checkWebMIntegrity(remaining) && state.webmHeader) {
-                remaining = Buffer.concat([state.webmHeader, remaining]);
-            }
+            console.log(`[${this.sessionId}][notes] Processing ${remaining.length} bytes remaining audio`);
 
-            state.audioBuffer = Buffer.alloc(0);
-            state.nchunks = 0;
-            state.webmHeader = null;
+            if (!checkWebMIntegrity(remaining) && st.webmHeader) {
+                remaining = Buffer.concat([st.webmHeader, remaining]);
+            }
+            st.audioBuffer = Buffer.alloc(0);
+            st.nchunks = 0;
+            st.webmHeader = null;
 
             try {
+                const t0 = Date.now();
                 const raw = await runWhisperOnBuffer(remaining);
-                const wordCount = raw.trim().split(/\s+/).length;
+                console.log(`[${this.sessionId}][notes] Remaining whisper: ${Date.now() - t0}ms`);
 
+                const wordCount = raw.trim().split(/\s+/).length;
                 if (wordCount >= MIN_WORD_COUNT) {
                     const revised = await reviseTranscription(raw);
-                    [state.transcript, state.currTranscriptSize] = appendWithOverlap(state.transcript, revised);
+                    [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
 
-                    // One more incremental update before the final pass
-                    state.currentMarkdown = await generateNotesIncremental(
+                    st.currentMarkdown = await generateNotesIncremental(
                         revised,
-                        state.currentMarkdown,
-                        state.noteStyle,
-                        state.sections
+                        st.currentMarkdown,
+                        this.st.noteStyle,
+                        this.st.sections
                     );
                 }
             } catch (err) {
-                console.error("[Notes] Error processing remaining audio:", err);
+                console.error(`[${this.sessionId}][notes] Error on remaining audio:`, err);
             }
         }
 
-        // Final gpt-4o polish pass
+        // Final GPT-5.4 polish pass
+        console.log(`[${this.sessionId}][notes] Starting final pass — transcript: ${st.transcript.length} chars`);
+        const finalStart = Date.now();
+
         try {
             const finalMarkdown = await finalizeNotes(
-                state.transcript,
-                state.currentMarkdown,
-                state.noteStyle,
-                state.sections
+                st.transcript,
+                st.currentMarkdown,
+                this.st.noteStyle,
+                this.st.sections
             );
-            state.currentMarkdown = finalMarkdown;
 
-            console.log(`[Notes] Final: ${state.transcript.length} chars transcript → ${finalMarkdown.length} chars notes`);
+            const finalMs = Date.now() - finalStart;
+            const stopMs = Date.now() - stopStart;
+            const sessionMs = Date.now() - this.sessionStartedAt;
 
-            this.send({
-                type: "notes_final",
-                notesMarkdown: finalMarkdown,
-            });
+            console.log(
+                `[${this.sessionId}][notes] Final pass complete — ` +
+                `finalizeNotes: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
+                `session: ${Math.round(sessionMs / 1000)}s, output: ${finalMarkdown.length} chars`
+            );
+
+            st.currentMarkdown = finalMarkdown;
+            this.send({ type: "notes_final", notesMarkdown: finalMarkdown });
         } catch (err) {
-            console.error("[Notes] Final pass error, sending current notes:", err);
-            this.send({
-                type: "notes_final",
-                notesMarkdown: state.currentMarkdown,
-            });
+            console.error(`[${this.sessionId}][notes] Final pass error:`, err);
+            this.send({ type: "notes_final", notesMarkdown: st.currentMarkdown });
         }
     }
 
     onClose(): void {
         this.queue.clear();
+        console.log(`[${this.sessionId}][notes] Handler closed`);
     }
 
     private send(msg: object): void {
