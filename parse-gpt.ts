@@ -197,7 +197,6 @@ export async function reviseTranscription(rawText: string): Promise<string> {
         max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
         reasoning_effort: GPT_REASONING_EFFORT,
-        temperature: 0.0,
     });
 
     const content = completion.choices?.[0]?.message?.content;
@@ -248,7 +247,6 @@ export async function extractAttributesFromText(
         max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
         reasoning_effort: GPT_REASONING_EFFORT,
-        temperature: 0.0,
     });
 
     const content = completion.choices?.[0]?.message?.content;
@@ -301,7 +299,6 @@ export async function parseFinalAttributes(
                     }),
                 },
             ],
-            temperature: 0.0,
             response_format: { type: "json_object" },
             reasoning_effort: GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
@@ -370,7 +367,6 @@ export async function generateNotesIncremental(
         max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
         reasoning_effort: GPT_REASONING_EFFORT,
-        temperature: 0.1, // slight creativity for natural note writing
     });
 
     const content = completion.choices?.[0]?.message?.content;
@@ -429,7 +425,6 @@ export async function finalizeNotes(
                     }),
                 },
             ],
-            temperature: 0.1,
             response_format: { type: "json_object" },
             reasoning_effort: GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
