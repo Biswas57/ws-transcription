@@ -23,12 +23,14 @@ export interface FieldDef {
 export interface StartFormsPayload {
     action: "start";
     mode: "forms";
+    token: string;
     blocks: Record<string, string[]>;
 }
 
 export interface StartNotesPayload {
     action: "start";
     mode: "notes";
+    token: string;
     noteStyle?: "clinical" | "meeting" | "study" | "general";
     sections?: string[];
 }
@@ -50,13 +52,13 @@ export interface StartedMessage {
 
 export interface AttributesUpdateMessage {
     type: "attributes_update";
-    corrected_audio: string;
+    // TODO: Reintroduce corrected_audio only with frontend coordination.
     attributes: Record<string, string>;
 }
 
 export interface FinalAttributesMessage {
     type: "final_attributes";
-    corrected_audio: string;
+    // TODO: Reintroduce corrected_audio only with frontend coordination.
     attributes: Record<string, string>;
 }
 

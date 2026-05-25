@@ -20,7 +20,6 @@
 
 import jwt from "jsonwebtoken";
 
-const SECRET = process.env.WS_TOKEN_SECRET;
 const TTL_SECONDS = 120; // 2 minutes
 
 export interface WSTokenPayload {
@@ -31,13 +30,18 @@ export interface WSTokenPayload {
     exp?: number;
 }
 
+function getSecret(): string {
+    const secret = process.env.WS_TOKEN_SECRET;
+    if (!secret) throw new Error("WS_TOKEN_SECRET is not set");
+    return secret;
+}
+
 /**
  * Mint a signed session token.
  * Call this from the tRPC router (Next.js side) only.
  */
 export function mintWSToken(userId: string, mode: "forms" | "notes"): string {
-    if (!SECRET) throw new Error("WS_TOKEN_SECRET is not set");
-    return jwt.sign({ userId, mode } satisfies Omit<WSTokenPayload, "iat" | "exp">, SECRET, {
+    return jwt.sign({ userId, mode } satisfies Omit<WSTokenPayload, "iat" | "exp">, getSecret(), {
         expiresIn: TTL_SECONDS,
     });
 }
@@ -48,6 +52,5 @@ export function mintWSToken(userId: string, mode: "forms" | "notes"): string {
  * Throws if invalid, expired, or secret missing.
  */
 export function verifyWSToken(token: string): WSTokenPayload {
-    if (!SECRET) throw new Error("WS_TOKEN_SECRET is not set");
-    return jwt.verify(token, SECRET) as WSTokenPayload;
+    return jwt.verify(token, getSecret()) as WSTokenPayload;
 }

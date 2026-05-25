@@ -1,19 +1,28 @@
 // load/run.ts
 import { program } from "commander";
 import { Worker } from "worker_threads";
-import { Histogram, build } from "hdr-histogram-js";
+import { build } from "hdr-histogram-js";
 import * as fs from "fs/promises";
 import * as path from "path";
+import { fileURLToPath } from "url";
 import chalk from "chalk";
 import { performance } from "perf_hooks";
+import dotenv from "dotenv";
+import type { VuResult } from "./scenario.js";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const argv = process.argv[2] === "--" ? process.argv.slice(0, 2).concat(process.argv.slice(3)) : process.argv;
 
 program
   .option("-c, --concurrency <n>", "max concurrent sessions", "50")
   .option("-d, --duration <s>", "test duration per wave in seconds", "60")
   .option("-r, --ramp <n>", "waves (1,2,4..×n)", "4")
   .option("--chaos", "enable random bad frames", false)
-  .option("--url <ws>", "server ws url", "ws://0.0.0.0:5551")
-  .parse(process.argv);
+  .option("--url <ws>", "server ws url", process.env.WS_URL ?? "ws://localhost:5551")
+  .parse(argv);
 
 const opts = program.opts();
 let audio: Buffer;
@@ -26,20 +35,22 @@ interface WaveMetrics {
   p95: number;
   p99: number;
   cacheHitRate: string;
+  failures: string[];
 }
 
 async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
   const perWorker = 20;             // spin ≤20 VUs per worker to avoid 1k sockets per thread
-  const workers: Promise<any[]>[] = [];
+  const workers: Promise<VuResult[]>[] = [];
   for (let i = 0; i < vus; i += perWorker) {
     const batch = Math.min(perWorker, vus - i);
     workers.push(
-      new Promise<any[]>((res) => {
+      new Promise<VuResult[]>((res) => {
         // Use the compiled worker.js file in the same directory
         const workerPath = path.join(__dirname, "worker.js");
         const w = new Worker(workerPath, {
           workerData: {
             vus: batch,
+            idOffset: i,
             cfg: {
               audio,
               serverUrl: opts.url,
@@ -51,7 +62,14 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
         w.on("message", res);
         w.on("error", (err) => {
           console.error("Worker error:", err);
-          res([]);
+          res(Array.from({ length: batch }, (_, n): VuResult => ({
+            id: i + n,
+            endReason: "client-error",
+            failure: `Worker error: ${err instanceof Error ? err.message : String(err)}`,
+            msgs: 0,
+            latencyMs: [],
+            cacheHits: 0,
+          })));
         });
       })
     );
@@ -63,12 +81,18 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
     fail = 0,
     hits = 0,
     totalMsgs = 0;
+  const failures: string[] = [];
 
   results.forEach((r) => {
     (r.latencyMs as number[]).forEach((l) => hist.recordValue(Math.round(l)));
     hits += r.cacheHits;
     totalMsgs += r.msgs;
-    r.endReason === "ok" ? ok++ : fail++;
+    if (r.endReason === "ok") {
+      ok++;
+    } else {
+      fail++;
+      failures.push(`VU ${r.id}: ${r.endReason}${r.failure ? ` — ${r.failure}` : ""}`);
+    }
   });
 
   return {
@@ -79,6 +103,7 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
     p95: hist.getValueAtPercentile(95),
     p99: hist.getValueAtPercentile(99),
     cacheHitRate: totalMsgs > 0 ? ((hits / totalMsgs) * 100).toFixed(1) + "%" : "0%",
+    failures,
   };
 }
 
@@ -88,6 +113,7 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
 
   console.log(chalk.blue("🔥 Starting extensive WebSocket load test..."));
   console.log(chalk.gray(`Server: ${opts.url}`));
+  console.log(chalk.gray("Note: start the transcription server separately before running load tests."));
   console.log(chalk.gray(`Max concurrency: ${opts.concurrency}`));
   console.log(chalk.gray(`Duration per wave: ${opts.duration}s`));
   console.log(chalk.gray(`Chaos mode: ${opts.chaos ? "enabled" : "disabled"}`));
@@ -112,7 +138,10 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
           `✓ ${m.ok}/${m.vus} ok  •  p50 ${m.p50} ms  p95 ${m.p95} ms  p99 ${m.p99} ms  •  cacheHit ${m.cacheHitRate}  •  ${t1}s`
         )
       );
-      if (m.fail) console.log(chalk.red(`✗ ${m.fail} failures`));
+      if (m.fail) {
+        console.log(chalk.red(`✗ ${m.fail} failures`));
+        m.failures.forEach((failure) => console.log(chalk.red(`  - ${failure}`)));
+      }
     } catch (error) {
       console.error(chalk.red(`❌ Wave ${i + 1} failed:`, error));
       break;

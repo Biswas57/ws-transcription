@@ -2,9 +2,15 @@
 import WebSocket from "ws";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import dotenv from "dotenv";
+import { mintWSToken } from "../ws-token.js";
+
+dotenv.config();
 
 type StartMsg = {
     action: "start";
+    mode: "forms";
+    token: string;
     blocks: Record<string, string[]>;
 };
 
@@ -15,13 +21,10 @@ type StopMsg = { action: "stop" };
 const WS_URL = process.env.WS_URL ?? "ws://localhost:5551";
 
 // --- Edit these blocks to match your form fields ---
-const START_PAYLOAD: StartMsg = {
-    action: "start",
-    blocks: {
-        id: ["full_name", "date_of_birth", "place_of_birth"],
-        medical: ["symptoms", "diagnosis", "prescription"],
-        financial: ["income", "expenses", "assets"],
-    },
+const START_BLOCKS = {
+    id: ["full_name", "date_of_birth", "place_of_birth"],
+    medical: ["symptoms", "diagnosis", "prescription"],
+    financial: ["income", "expenses", "assets"],
 };
 
 function makeFFmpegArgs(platform: NodeJS.Platform): string[] {
@@ -91,7 +94,13 @@ async function main() {
             console.log("[client] ws not open yet");
             return;
         }
-        ws.send(JSON.stringify(START_PAYLOAD));
+        const startPayload: StartMsg = {
+            action: "start",
+            mode: "forms",
+            token: mintWSToken("live-test-user", "forms"),
+            blocks: START_BLOCKS,
+        };
+        ws.send(JSON.stringify(startPayload));
         console.log("[client] sent start");
     }
 

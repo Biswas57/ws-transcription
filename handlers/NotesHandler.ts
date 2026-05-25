@@ -28,7 +28,9 @@ export class NotesHandler implements TranscriptionHandler {
             sections: [],
             currentMarkdown: "",
         };
-        this.queue = new PQueue({ concurrency: 4 });
+        // Session transcript/markdown state is mutated sequentially; do not
+        // parallelise without sequence guards around pass ordering.
+        this.queue = new PQueue({ concurrency: 1 });
     }
 
     async onStart(payload: StartPayload): Promise<void> {

@@ -1,14 +1,24 @@
 import { WebSocket } from "ws";
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+import { mintWSToken } from "../ws-token.js";
+
+dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 async function main() {
-    const ws = new WebSocket("ws://0.0.0.0:5551");
+    const ws = new WebSocket(process.env.WS_URL ?? "ws://localhost:5551");
 
     ws.on("open", async () => {
         // init schema
         ws.send(JSON.stringify({
             action: "start",
+            mode: "forms",
+            token: mintWSToken("test-user", "forms"),
             blocks: {
                 id:
                     [

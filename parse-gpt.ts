@@ -8,6 +8,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
 const GPT_FULL_MODEL = "gpt-5.4";
 const GPT_REASONING_EFFORT = "low" as const;
+const FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
 // The bundled tiktoken version in this repo does not recognize GPT-5.4 aliases yet.
 const tokenCounter = get_encoding("o200k_base");
 
@@ -144,8 +145,9 @@ function countTokens(text: string): number {
     return tokenCounter.encode(text).length;
 }
 
-// Truncate transcript intelligently — keep start and end, drop middle if needed
-function truncateTranscript(text: string, maxChars: number): string {
+// Preserves the beginning and end for final passes, but may drop middle content.
+// TODO: Replace with chunked or rolling-summary handling for long sessions.
+function truncateTranscriptPreservingEdges(text: string, maxChars: number): string {
     if (text.length <= maxChars) return text;
     const half = Math.floor(maxChars / 2);
     const start = text.slice(0, half);
@@ -276,7 +278,7 @@ export async function parseFinalAttributes(
 
     const allowed = allowedKeySet(template);
     const allowedSet = new Set(allowed);
-    const truncated = truncateTranscript(fullTranscript, 6000);
+    const truncated = truncateTranscriptPreservingEdges(fullTranscript, FINAL_TRANSCRIPT_CHAR_LIMIT);
 
     const normalizedCandidates: Record<string, string> = {};
     for (const [k, v] of Object.entries(candidateAttributes)) {
@@ -406,7 +408,7 @@ export async function finalizeNotes(
         return currentNotes;
     }
 
-    const truncated = truncateTranscript(fullTranscript, 6000);
+    const truncated = truncateTranscriptPreservingEdges(fullTranscript, FINAL_TRANSCRIPT_CHAR_LIMIT);
     const inputTokens = countTokens(truncated) + countTokens(currentNotes);
     const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.2));
 

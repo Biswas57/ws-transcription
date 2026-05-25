@@ -32,7 +32,9 @@ export class FormFillHandler implements TranscriptionHandler {
             template: [],
             currAttributes: {},
         };
-        this.queue = new PQueue({ concurrency: 4 });
+        // Session transcript/attribute state is mutated sequentially; do not
+        // parallelise without sequence guards around pass ordering.
+        this.queue = new PQueue({ concurrency: 1 });
     }
 
     async onStart(payload: StartPayload): Promise<void> {

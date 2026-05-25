@@ -3,11 +3,15 @@ import { WebSocket } from "ws";
 import * as fs from "fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
+import { mintWSToken } from "../ws-token.js";
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const WS_URL = "ws://0.0.0.0:5551";
+const WS_URL = process.env.WS_URL ?? "ws://localhost:5551";
 const NUM_SESSIONS = 3;        // how many start/stop cycles to test
 const CHUNK_PAUSE = 100;      // ms between chunks
 const GAP_BETWEEN = 100;     // ms between sessions
@@ -20,6 +24,8 @@ async function runSession(ws: WebSocket, sessionId: number) {
     // tell server to start a new template / recording
     ws.send(JSON.stringify({
         action: "start",
+        mode: "forms",
+        token: mintWSToken(`test-user-${sessionId}`, "forms"),
         blocks: {
             id: ["name", "DOB", "place of Birth"]
         }

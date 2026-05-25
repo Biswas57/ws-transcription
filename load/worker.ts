@@ -6,7 +6,7 @@ import { virtualUser, VuResult, VuConfig } from "./scenario.js";
     const cfg: VuConfig = workerData.cfg;
     const runs: VuResult[] = [];
     for (let i = 0; i < workerData.vus; i++) {
-        runs.push(await virtualUser({ ...cfg, id: i }));
+        runs.push(await virtualUser({ ...cfg, id: workerData.idOffset + i }));
     }
     parentPort!.postMessage(runs);
 })();

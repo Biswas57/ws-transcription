@@ -5,11 +5,14 @@
   "main": "dist/app.js",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && node dist/app.js",
-    "test-client": "ts-node test/test.ts",
-    "load-test": "npm run build && node dist/load/run.js",
-    "load-test:chaos": "npm run build && node dist/load/run.js --chaos",
-    "load-test:heavy": "npm run build && node dist/load/run.js -c 100 -d 30 -r 6"
+    "start": "pnpm build && node dist/app.js",
+    "test-client": "tsx test/test.ts",
+    "test-client:single": "tsx test/test2.ts",
+    "test-client:live": "tsx test/live-client.ts",
+    "test-auth": "pnpm build && tsx test/auth.ts",
+    "load-test": "pnpm build && node dist/load/run.js",
+    "load-test:chaos": "pnpm build && node dist/load/run.js --chaos",
+    "load-test:heavy": "pnpm build && node dist/load/run.js -c 100 -d 30 -r 6"
   },
   "dependencies": {
     "@dqbd/tiktoken": "^1.0.21",
