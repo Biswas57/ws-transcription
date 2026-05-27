@@ -4,49 +4,45 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 
 ## Completed
 
-### T-001 Fix test-client ESM/ts-node import issue
-
-- Status: Done
-- Risk: Low
-- Summary: Test clients now match the current WebSocket auth contract by sending `mode` and JWT `token`. `test-client` runs with `tsx`, so source files can keep ESM-style `.js` imports such as `../ws-token.js` without creating root `.js` files.
-- Validation: `pnpm build` passed. `pnpm test-client` reached the WebSocket connection step; with no server running it reports `ECONNREFUSED`, which is expected.
-- Notes: Requires `WS_TOKEN_SECRET` in `.env` and a running server for a full success path.
-
-### T-002 Improve load-test failure logging and default WS_URL
-
-- Status: Done
-- Risk: Low
-- Summary: Load tests now default to `ws://localhost:5551`, allow `WS_URL`, print that the server must be started separately, and report per-VU failure reasons such as `connection-error`, `auth-failure`, `server-error`, `timeout`, or `unexpected-close`.
-- Validation: `pnpm build` passed. `pnpm load-test -- -c 2 -r 1 -d 5` reports clear `ECONNREFUSED` failures when the server is not running.
-- Notes: Load tests still exercise real API paths when the server is running.
-
-### T-003 Verify WS_TOKEN_SECRET fails closed
-
-- Status: Done
-- Risk: Low
-- Summary: Added a focused auth test that starts the built WebSocket server and verifies missing `WS_TOKEN_SECRET`, missing token, invalid token, expired token, and token mode mismatch all fail closed. Also verifies a valid token with matching mode reaches `started`.
-- Validation: `pnpm build` passed. `pnpm test-auth` passed with all six auth cases.
-- Notes: Test does not stream audio or call OpenAI.
+| ID | Status | Notes |
+| --- | --- | --- |
+| T-001 Fix test-client ESM/ts-node import issue | Completed | Test clients use the current `mode`/`token` start contract and `tsx` source runner; no root `.js` shims. |
+| T-002 Improve load-test failure logging and default WS_URL | Completed | Load tests default to `ws://localhost:5551`, allow `WS_URL`, and print per-VU failure reasons. |
+| T-003 Verify WS_TOKEN_SECRET fails closed | Completed | Focused auth test verifies missing secret/token, invalid token, expired token, and mode mismatch fail closed; valid token reaches `started`. |
+| T-004 Smoke test WebSocket recording flow | Completed | Start/stop flow has been tested repeatedly with valid mode/token sessions; recording reaches started and behaves reliably. Remaining edge cases are non-blocking. |
+| T-006 Harden form extraction for locked/excluded fields | Completed | Prompt hardening tells incremental/final extraction not to force missing/locked/excluded-field information into nearby allowed fields, including street address vs `living_situation`. |
+| T-008 Improve notes prompts for long training conversations | Completed | Notes prompts now reduce duplication, repair fragmented headings, preserve technical terms, and make final notes more editorial/checklist-oriented for long professional training/process conversations. |
 
 ## Active
 
-### T-004 Smoke test mode/token WebSocket start flow
-
-- Status: Active
-- Risk: Low
-- Goal: With the WebSocket server running, verify that a valid token plus `mode: "forms"` reaches `started`, a valid token plus `mode: "notes"` reaches `started`, invalid/missing tokens are rejected, `stop` can be sent without crashing, and `test-client`/`load-test` reach expected connection/auth behavior.
-- Validation:
-  - `pnpm build`
-  - `pnpm test-auth`
-  - `pnpm test-client` with server running
-  - `pnpm load-test -- -c 2 -r 1 -d 5` with server running
-- Notes: Do not change application code unless the smoke test reveals a confirmed bug. Full audio processing may call OpenAI APIs.
+| ID | Status | Notes |
+| --- | --- | --- |
+| _None_ | - | No active ticket selected. |
 
 ## Backlog
 
-### T-005 Later: long-session transcript chunking strategy
+| ID | Status | Notes |
+| --- | --- | --- |
+| T-005 Later: long-session transcript chunking strategy | Backlog | Replace final-pass beginning/end truncation with chunked processing or rolling summaries after product/frontend expectations are clear. |
+| T-007 Add HTTP notes transform endpoints | Backlog | Medium/High priority, medium risk. Add server-to-server HTTP endpoints for notes summarise/reorganise post-processing; keep browser WebSocket focused on live audio transcription. |
+
+### T-007 Add HTTP notes transform endpoints
 
 - Status: Backlog
+- Priority: Medium/High
 - Risk: Medium
-- Goal: Replace the current final-pass beginning/end transcript truncation with chunked processing or rolling summaries for long sessions.
-- Notes: Needs product/frontend expectations for long recordings before implementation.
+- Goal: Add server-to-server HTTP endpoints in ws-transcription for notes post-processing:
+  - summarise current generated notes
+  - reorganise current notes into requested sections
+- Early design notes:
+  - Endpoint examples: `POST /internal/notes/summarise`, `POST /internal/notes/reorganise`
+  - Summarise input: `{ notesMarkdown: string }`
+  - Reorganise input: `{ notesMarkdown: string, sections: string[] }`
+  - Response: `{ notesMarkdown: string }`
+  - Use internal shared-secret auth, e.g. `x-formify-internal-secret`.
+  - Do not save notes.
+  - Do not accept audio.
+  - Do not log notes content or PII.
+  - Do not change the existing browser WebSocket start/stop/audio protocol.
+  - Reuse `parse-gpt.ts` / existing OpenAI helper patterns where appropriate.
+  - Exact implementation details should be planned later when this ticket becomes active.

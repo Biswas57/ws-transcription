@@ -6,10 +6,10 @@ dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
-const GPT_FULL_MODEL = "gpt-5.4";
+const GPT_FULL_MODEL = "gpt-5.5";
 const GPT_REASONING_EFFORT = "low" as const;
 const FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
-// The bundled tiktoken version in this repo does not recognize GPT-5.4 aliases yet.
+// The bundled tiktoken version in this repo does not recognize GPT-5.5 aliases yet.
 const tokenCounter = get_encoding("o200k_base");
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
@@ -53,6 +53,10 @@ EXTRACTION RULES:
 - Return a SPARSE object — only include fields where you found new or updated information.
 - Do NOT return a field if the current_value is already correct and complete.
 - Do NOT guess or infer beyond what is explicitly stated or strongly implied in the transcript.
+- Only fill a field if the transcript clearly answers that exact field.
+- If information appears to belong to a missing, locked, or excluded field, ignore it rather than forcing it into another available field.
+- Do NOT use a semantically nearby allowed key as a fallback.
+- A street address must not be placed into living_situation. living_situation means household arrangement, such as lives alone, with parents, with spouse, supported accommodation, homeless, etc.
 - Do NOT populate a field from vague, ambiguous, or off-topic speech.
 - If a returned value would be worse than the existing current_value, omit that field.
 
@@ -81,6 +85,10 @@ KEY RULES:
 
 EXTRACTION RULES:
 - Do NOT guess. Only fill a field if the information is explicitly stated or strongly implied.
+- Only fill or update a field if the transcript clearly answers that exact field.
+- If information appears to belong to a missing, locked, or excluded field, ignore it rather than forcing it into another available field.
+- Do NOT use a semantically nearby allowed key as a fallback.
+- A street address must not be placed into living_situation. living_situation means household arrangement, such as lives alone, with parents, with spouse, supported accommodation, homeless, etc.
 - Do NOT infer from vague or ambiguous speech.
 - If a current_value is already correct and complete, return it unchanged.
 - If the transcript contains a correction, more complete, or more specific value, use that.
@@ -96,23 +104,34 @@ You are a live note-taking scribe in an Australian professional context \
 (clinical, meetings, social work, HR).
 
 You are given:
-1. note_style — the style/context of notes (clinical, meeting, study, general)
-2. sections — optional section headings to organise notes under (may be empty)
-3. current_notes — the notes accumulated so far (may be empty on first chunk)
-4. transcript_segment — a new revised transcript segment to incorporate
+1. note_style - the style/context of notes (clinical, meeting, study, general)
+2. sections - optional section headings to organise notes under (may be empty)
+3. current_notes - the notes accumulated so far (may be empty on first chunk)
+4. transcript_segment - a new revised transcript segment to incorporate
 
 YOUR TASK:
-- Read the new transcript segment carefully.
-- Update current_notes by appending new information and/or refining existing content.
-- Do NOT remove or overwrite existing content unless correcting an obvious transcription error.
-- If sections are provided, organise all content under those headings using ## markdown headings.
-- Use clear, professional markdown: ## headings, - bullet points, **bold** for key facts.
-- Be concise — notes capture decisions, facts, and key details; they are not a transcript.
-- Write in third person or impersonal style appropriate to the note_style.
-  clinical: "Patient reports...", "Denies...", "History of..."
-  meeting: "Team agreed...", "Action: ...", "Decision: ..."
-  study: "Key concept: ...", "Note: ..."
-  general: flexible prose with bullet structure
+- Update current_notes with the new transcript_segment.
+- Capture new facts, decisions, actions, process steps, caveats, and important details.
+- Do not produce a transcript.
+- Do not duplicate information already captured.
+- If new information expands an existing point, merge it into the relevant existing bullet or section.
+- Do not remove existing content unless correcting an obvious transcription error, duplicate, or broken heading.
+- If sections are provided, use them as stable top-level ## headings.
+- If sections are empty, infer clear professional headings.
+- Use ### subheadings for component-specific or topic-specific material where helpful.
+- Never create broken or partial headings from transcript fragments.
+- Normalise obvious fragmented headings.
+  Example: use "Disk / SSD / HDD - Information to capture and perform", not separate headings like "Disk (HDD" and "SSD)".
+- Preserve technical acronyms and names exactly where possible.
+- If a term is uncertain, keep it as uncertain rather than inventing a correction.
+- Use clear professional markdown: ## headings, ### subheadings, - bullets, **bold** for key facts.
+- Be concise but not lossy.
+
+Style guidance:
+- clinical: professional clinical note style.
+- meeting: decisions, actions, owners, blockers.
+- study: concepts, definitions, process steps, examples.
+- general: clear structured notes.
 
 Return ONLY valid JSON: {"notesMarkdown": "<full updated notes as a markdown string>"}
 No markdown fences, no extra keys.`;
@@ -122,19 +141,42 @@ You are a professional note editor in an Australian context \
 (clinical, meetings, social work, HR).
 
 You are given:
-1. note_style — the style/context of notes
-2. sections — optional section headings
-3. current_notes — notes accumulated during the session
-4. full_transcript — the complete revised transcript
+1. note_style - the style/context of notes
+2. sections - optional section headings
+3. current_notes - draft notes accumulated during the session
+4. full_transcript - the complete revised transcript
 
 YOUR TASK:
-- Produce a final, polished version of the notes.
-- Fill any gaps missed during live note-taking by re-reading the full transcript.
-- Correct errors or inconsistencies.
-- If sections are provided, ensure every section heading is present.
-  Add "N/A" under any section with no relevant content.
-- Maintain professional tone and clear markdown structure.
-- Do NOT invent information not present in the transcript.
+Produce a final polished version of the notes.
+
+Treat current_notes as a draft, not as a fixed structure.
+Use full_transcript to verify, fill gaps, correct mistakes, and improve organisation.
+
+Editing requirements:
+- Merge duplicate sections and repeated bullets.
+- Repair broken or fragmented headings caused by live chunking.
+- Normalise headings into clear professional labels.
+- Preserve all important facts, decisions, actions, examples, caveats, and process steps.
+- Remove transcript-like phrasing and filler.
+- Correct obvious transcription errors only when context makes the correction clear.
+- Do not invent information not present in current_notes or full_transcript.
+- If a term is uncertain, include it under "Open questions / verify" rather than guessing.
+- If sections are provided, include every requested section as a ## heading.
+- Add "N/A" only for requested sections with no relevant content.
+- If sections are empty, infer a clean structure appropriate to the content.
+
+Only include headings that are useful for the actual content.
+Only include "Open questions / verify" when there are genuine uncertainties.
+Use a "Quick checklist" for procedural content when it would help the user act on the notes.
+
+Markdown requirements:
+- Use ## for major sections.
+- Use ### for subtopics.
+- Use - bullets for most notes.
+- Use numbered lists only for ordered procedures.
+- Use **bold** sparingly for key facts.
+- Avoid markdown tables unless explicitly requested.
+- Keep the notes concise, structured, and useful for later review.
 
 Return ONLY valid JSON: {"notesMarkdown": "<final polished notes as a markdown string>"}
 No markdown fences, no extra keys.`;

@@ -37,3 +37,10 @@
 
 - Final GPT passes currently preserve the beginning and end of long transcripts and may drop the middle.
 - This is an accepted short-term limit, not the desired long-term strategy.
+
+### Notes AI Post-Processing Over HTTP
+
+- Future notes Summarise/Reorganise actions should use server-to-server HTTP endpoints on `ws-transcription`.
+- `formify-web` should call those endpoints from protected tRPC/server code.
+- The browser WebSocket protocol remains focused on live audio transcription only.
+- Do not duplicate OpenAI/Groq provider logic directly in `formify-web` unless this decision is revisited.
