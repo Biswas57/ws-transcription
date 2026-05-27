@@ -8,7 +8,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
 const GPT_FULL_MODEL = "gpt-5.5";
 const GPT_REASONING_EFFORT = "low" as const;
-const FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
+// Forms extract discrete fields, so keep a conservative final transcript window.
+const FORM_FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
+// Notes summarise whole sessions, so they need a larger window until T-005 adds chunked/rolling synthesis.
+const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 50000;
 // The bundled tiktoken version in this repo does not recognize GPT-5.5 aliases yet.
 const tokenCounter = get_encoding("o200k_base");
 
@@ -111,6 +114,7 @@ You are given:
 
 YOUR TASK:
 - Update current_notes with the new transcript_segment.
+- current_notes may include prior notes and user edits from earlier recording segments; preserve them unless the new transcript clearly corrects or expands them.
 - Capture new facts, decisions, actions, process steps, caveats, and important details.
 - Do not produce a transcript.
 - Do not duplicate information already captured.
@@ -144,13 +148,14 @@ You are given:
 1. note_style - the style/context of notes
 2. sections - optional section headings
 3. current_notes - draft notes accumulated during the session
-4. full_transcript - the complete revised transcript
+4. available_transcript - the available revised transcript for final review, which may be truncated for long sessions
 
 YOUR TASK:
 Produce a final polished version of the notes.
 
 Treat current_notes as a draft, not as a fixed structure.
-Use full_transcript to verify, fill gaps, correct mistakes, and improve organisation.
+current_notes may include prior notes and user edits from earlier recording segments; preserve them unless available_transcript clearly corrects or expands them.
+Use available_transcript to verify, fill gaps, correct mistakes, and improve organisation.
 
 Editing requirements:
 - Merge duplicate sections and repeated bullets.
@@ -159,7 +164,7 @@ Editing requirements:
 - Preserve all important facts, decisions, actions, examples, caveats, and process steps.
 - Remove transcript-like phrasing and filler.
 - Correct obvious transcription errors only when context makes the correction clear.
-- Do not invent information not present in current_notes or full_transcript.
+- Do not invent information not present in current_notes or available_transcript.
 - If a term is uncertain, include it under "Open questions / verify" rather than guessing.
 - If sections are provided, include every requested section as a ## heading.
 - Add "N/A" only for requested sections with no relevant content.
@@ -320,7 +325,7 @@ export async function parseFinalAttributes(
 
     const allowed = allowedKeySet(template);
     const allowedSet = new Set(allowed);
-    const truncated = truncateTranscriptPreservingEdges(fullTranscript, FINAL_TRANSCRIPT_CHAR_LIMIT);
+    const truncated = truncateTranscriptPreservingEdges(fullTranscript, FORM_FINAL_TRANSCRIPT_CHAR_LIMIT);
 
     const normalizedCandidates: Record<string, string> = {};
     for (const [k, v] of Object.entries(candidateAttributes)) {
@@ -450,7 +455,17 @@ export async function finalizeNotes(
         return currentNotes;
     }
 
-    const truncated = truncateTranscriptPreservingEdges(fullTranscript, FINAL_TRANSCRIPT_CHAR_LIMIT);
+    const truncated = truncateTranscriptPreservingEdges(fullTranscript, NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT);
+    const wasTruncated = fullTranscript.length > NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT;
+    console.log(
+        `[notes-final] Context — ` +
+        `model: ${GPT_FULL_MODEL}, ` +
+        `limit: ${NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT}, ` +
+        `transcriptBefore: ${fullTranscript.length}, ` +
+        `transcriptAfter: ${truncated.length}, ` +
+        `notesChars: ${currentNotes.length}, ` +
+        `truncated: ${wasTruncated}`
+    );
     const inputTokens = countTokens(truncated) + countTokens(currentNotes);
     const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.2));
 
@@ -465,7 +480,7 @@ export async function finalizeNotes(
                         note_style: noteStyle,
                         sections: sections.length > 0 ? sections : undefined,
                         current_notes: currentNotes,
-                        full_transcript: truncated,
+                        available_transcript: truncated,
                     }),
                 },
             ],

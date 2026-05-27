@@ -15,6 +15,25 @@ import {
 } from "../transcription.js";
 import { reviseTranscription, generateNotesIncremental, finalizeNotes } from "../parse-gpt.js";
 
+const MAX_CONTINUATION_NOTES_CHARS = 20000;
+const CONTINUATION_OMISSION_MARKER = "\n\n[... middle of previous notes omitted due to continuation size limit ...]\n\n";
+
+function normalizeContinuationNotes(markdown: string): { markdown: string; truncated: boolean } {
+    const trimmed = markdown.trim();
+    if (trimmed.length <= MAX_CONTINUATION_NOTES_CHARS) {
+        return { markdown: trimmed, truncated: false };
+    }
+
+    // Preserve the start for structure/headings and the end for recent manual edits.
+    const availableChars = MAX_CONTINUATION_NOTES_CHARS - CONTINUATION_OMISSION_MARKER.length;
+    const headChars = Math.ceil(availableChars / 2);
+    const tailChars = Math.floor(availableChars / 2);
+    return {
+        markdown: `${trimmed.slice(0, headChars)}${CONTINUATION_OMISSION_MARKER}${trimmed.slice(-tailChars)}`,
+        truncated: true,
+    };
+}
+
 export class NotesHandler implements TranscriptionHandler {
     private st: NotesState;
     private queue: PQueue;
@@ -38,15 +57,24 @@ export class NotesHandler implements TranscriptionHandler {
 
         this.st.noteStyle = payload.noteStyle ?? "general";
         this.st.sections = payload.sections ?? [];
-        this.st.currentMarkdown = "";
+        const continuationRequested = payload.continuation === true;
+        const providedNotesChars = typeof payload.currentNotesMarkdown === "string" ? payload.currentNotesMarkdown.length : 0;
+        const continuation = continuationRequested && typeof payload.currentNotesMarkdown === "string"
+            ? normalizeContinuationNotes(payload.currentNotesMarkdown)
+            : { markdown: "", truncated: false };
+        this.st.currentMarkdown = continuation.markdown;
         this.passCount = 0;
         this.sessionStartedAt = Date.now();
 
-        // Log resolved config — safe to log (user-chosen config, not transcript content)
+        // Log resolved config only; never log notes content.
         console.log(
             `[${this.sessionId}][notes] Session start — ` +
             `style: "${this.st.noteStyle}", ` +
-            `sections: [${this.st.sections.length > 0 ? this.st.sections.map(s => `"${s}"`).join(", ") : "none"}]`
+            `sections: [${this.st.sections.length > 0 ? this.st.sections.map(s => `"${s}"`).join(", ") : "none"}], ` +
+            `continuation: ${continuationRequested}, ` +
+            `providedNotesChars: ${providedNotesChars}, ` +
+            `seededNotesChars: ${this.st.currentMarkdown.length}, ` +
+            `truncated: ${continuation.truncated}`
         );
 
         this.send({ type: "started", mode: "notes" });

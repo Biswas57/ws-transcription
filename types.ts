@@ -33,6 +33,8 @@ export interface StartNotesPayload {
     token: string;
     noteStyle?: "clinical" | "meeting" | "study" | "general";
     sections?: string[];
+    continuation?: boolean;
+    currentNotesMarkdown?: string;
 }
 
 export type StartPayload = StartFormsPayload | StartNotesPayload;

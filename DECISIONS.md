@@ -38,9 +38,23 @@
 - Final GPT passes currently preserve the beginning and end of long transcripts and may drop the middle.
 - This is an accepted short-term limit, not the desired long-term strategy.
 
+### Separate Forms And Notes Final Context Limits
+
+- Forms and Notes use separate final transcript context limits.
+- Forms keep conservative truncation because they extract discrete field values.
+- Notes use a larger final transcript window because they summarise whole sessions.
+- Long-term Notes finalisation still needs chunked or rolling-summary synthesis.
+- Raw transcript and notes content must not be logged.
+
 ### Notes AI Post-Processing Over HTTP
 
 - Future notes Summarise/Reorganise actions should use server-to-server HTTP endpoints on `ws-transcription`.
 - `formify-web` should call those endpoints from protected tRPC/server code.
 - The browser WebSocket protocol remains focused on live audio transcription only.
 - Do not duplicate OpenAI/Groq provider logic directly in `formify-web` unless this decision is revisited.
+
+### Notes Continuation Context
+
+- Notes mode supports optional continuation context in the `start` payload so multi-segment recordings can resume from current visible notes.
+- Continuation notes seed backend notes state but do not change auth, binary audio handling, or outbound message types.
+- Notes content must not be logged.
