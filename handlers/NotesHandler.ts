@@ -6,7 +6,7 @@ import {
     NotesState,
     makeAudioState,
 } from "../types.js";
-import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "../types.js";
+import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE, NOTES_CHUNK_PHASES } from "../types.js";
 import {
     checkWebMIntegrity,
     extractWebMInitSegment,
@@ -150,7 +150,11 @@ export class NotesHandler implements TranscriptionHandler {
         st.audioBuffer = Buffer.concat([st.audioBuffer, chunk]);
         st.nchunks++;
 
-        if (st.nchunks < MIN_CHUNK_NUM) return;
+        // T-012d: Notes-only adaptive batch threshold — smaller batches early in
+        // the session so revised transcript (and notes updates) arrive sooner,
+        // tapering to MIN_CHUNK_NUM later. Forms mode is unaffected.
+        const chunkThreshold = this.notesChunkThreshold();
+        if (st.nchunks < chunkThreshold) return;
 
         if (!checkWebMIntegrity(st.audioBuffer) && st.webmHeader) {
             st.audioBuffer = Buffer.concat([st.webmHeader, st.audioBuffer]);
@@ -165,7 +169,10 @@ export class NotesHandler implements TranscriptionHandler {
 
         this.queue.add(async () => {
             const passStart = Date.now();
-            console.log(`[${this.sessionId}][notes] Pass ${passNum} start — buffer: ${captureSize} bytes`);
+            console.log(
+                `[${this.sessionId}][notes] Pass ${passNum} start — ` +
+                `buffer: ${captureSize} bytes, chunkThreshold: ${chunkThreshold}`
+            );
 
             try {
                 // Stage 1: Whisper transcription
@@ -340,6 +347,21 @@ export class NotesHandler implements TranscriptionHandler {
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
         console.log(`[${this.sessionId}][notes] Handler closed`);
+    }
+
+    // ── Notes-only adaptive audio batch threshold (T-012d) ────────────────────
+    //
+    // Returns the minimum number of buffered ~2s chunks required before a
+    // Whisper/revision pass fires, based on elapsed session time. Smaller early
+    // thresholds make revised transcript available sooner so the notes scheduler
+    // can actually update near its early-phase cadence; later phases taper back
+    // to MIN_CHUNK_NUM. Forms mode does not use this and keeps MIN_CHUNK_NUM.
+    private notesChunkThreshold(): number {
+        const elapsed = Date.now() - this.sessionStartedAt;
+        for (const phase of NOTES_CHUNK_PHASES) {
+            if (elapsed < phase.untilMs) return phase.minChunks;
+        }
+        return MIN_CHUNK_NUM;
     }
 
     // ── Adaptive scheduler ────────────────────────────────────────────────────

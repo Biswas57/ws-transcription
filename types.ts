@@ -11,6 +11,18 @@ export const MIN_CHUNK_NUM = 10;
 export const MIN_WORD_COUNT = 5;
 export const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
 
+// NOTES_CHUNK_PHASES (T-012d): Notes-only early audio batching. At ~2s recorder
+// chunks, smaller early batches make revised transcript (and therefore notes
+// updates) arrive sooner, then taper toward MIN_CHUNK_NUM as the session grows.
+// Phase boundaries mirror the notes-scheduler taper (2/5/10 min). Forms mode is
+// unaffected and continues to use MIN_CHUNK_NUM. 10+ min falls back to
+// MIN_CHUNK_NUM (10) → ~20s.
+export const NOTES_CHUNK_PHASES: { untilMs: number; minChunks: number }[] = [
+    { untilMs:  2 * 60_000, minChunks: 4 }, // 0–2 min  → ~8s
+    { untilMs:  5 * 60_000, minChunks: 5 }, // 2–5 min  → ~10s
+    { untilMs: 10 * 60_000, minChunks: 8 }, // 5–10 min → ~16s
+];
+
 // ─── Field definition ─────────────────────────────────────────────────────────
 
 export interface FieldDef {

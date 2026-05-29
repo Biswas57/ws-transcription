@@ -83,28 +83,49 @@ export class FormFillHandler implements TranscriptionHandler {
 
         const captureBuffer = st.audioBuffer;
         const captureSize = captureBuffer.length;
+        const captureChunkCount = st.nchunks;
         st.audioBuffer = Buffer.alloc(0);
         st.nchunks = 0;
         const passNum = ++this.passCount;
+        const queueSizeAtEnqueue = this.queue.size;
+        const queuePendingAtEnqueue = this.queue.pending;
 
         this.queue.add(async () => {
             const passStart = Date.now();
-            console.log(`[${this.sessionId}][forms] Pass ${passNum} start — buffer: ${captureSize} bytes`);
+            console.log(
+                `[${this.sessionId}][forms] Pass ${passNum} start — ` +
+                `queueSize: ${queueSizeAtEnqueue}, queuePending: ${queuePendingAtEnqueue}, ` +
+                `bufferBytes: ${captureSize}, chunkCount: ${captureChunkCount}`
+            );
 
             try {
                 // Stage 1: Whisper
                 const t0 = Date.now();
                 const transcription = await runWhisperOnBuffer(captureBuffer);
-                console.log(`[${this.sessionId}][forms] Pass ${passNum} — whisper: ${Date.now() - t0}ms, chars: ${transcription.length}`);
+                const whisperMs = Date.now() - t0;
+                const rawChars = transcription.length;
+                console.log(
+                    `[${this.sessionId}][forms] Pass ${passNum} — ` +
+                    `whisper: ${whisperMs}ms, rawChars: ${rawChars}`
+                );
 
                 // Stage 2: Revision
                 const t1 = Date.now();
                 const revised = await reviseTranscription(transcription);
-                console.log(`[${this.sessionId}][forms] Pass ${passNum} — revise: ${Date.now() - t1}ms`);
+                const reviseMs = Date.now() - t1;
+                const revisedChars = revised.length;
+                console.log(
+                    `[${this.sessionId}][forms] Pass ${passNum} — ` +
+                    `revise: ${reviseMs}ms, revisedChars: ${revisedChars}`
+                );
 
                 const wordCount = revised.trim().split(/\s+/).length;
                 if (wordCount < MIN_WORD_COUNT) {
-                    console.log(`[${this.sessionId}][forms] Pass ${passNum} — too short (${wordCount} words), skipping`);
+                    const passMs = Date.now() - passStart;
+                    console.log(
+                        `[${this.sessionId}][forms] Pass ${passNum} skipped — ` +
+                        `tooShort: ${wordCount} words, passMs: ${passMs}`
+                    );
                     return;
                 }
 
@@ -117,18 +138,22 @@ export class FormFillHandler implements TranscriptionHandler {
                 const extracted = await extractAttributesFromText(window, st.template, st.currAttributes);
                 st.currAttributes = { ...st.currAttributes, ...extracted };
                 const extractMs = Date.now() - t2;
-                const e2eMs = Date.now() - passStart;
+                const passMs = Date.now() - passStart;
+                const attrsReturned = Object.keys(extracted).length;
 
-                const newFields = Object.keys(extracted).length;
                 console.log(
                     `[${this.sessionId}][forms] Pass ${passNum} complete — ` +
-                    `extract: ${extractMs}ms (${newFields} fields updated), e2e: ${e2eMs}ms`
+                    `extract: ${extractMs}ms, attrsReturned: ${attrsReturned}, passMs: ${passMs}`
                 );
 
                 this.send({ type: "attributes_update", attributes: st.currAttributes });
 
             } catch (e) {
-                console.error(`[${this.sessionId}][forms] Pass ${passNum} failed after ${Date.now() - passStart}ms:`, e);
+                console.error(
+                    `[${this.sessionId}][forms] Pass ${passNum} failed — ` +
+                    `passMs: ${Date.now() - passStart}ms:`,
+                    e
+                );
                 this.send({ type: "error", code: "transcription-failed" });
             }
         });
@@ -137,9 +162,17 @@ export class FormFillHandler implements TranscriptionHandler {
     async onStop(): Promise<void> {
         const stopStart = Date.now();
         const st = this.st;
-        console.log(`[${this.sessionId}][forms] Stop received — draining queue`);
+        const queueSizeAtStop = this.queue.size;
+        const queuePendingAtStop = this.queue.pending;
+        console.log(
+            `[${this.sessionId}][forms] Stop received — ` +
+            `queueSize: ${queueSizeAtStop}, queuePending: ${queuePendingAtStop}`
+        );
 
+        const drainStart = Date.now();
         await this.queue.onIdle();
+        const drainMs = Date.now() - drainStart;
+        console.log(`[${this.sessionId}][forms] Queue drained — ${drainMs}ms`);
 
         let remaining = st.audioBuffer;
 
@@ -156,14 +189,29 @@ export class FormFillHandler implements TranscriptionHandler {
         st.nchunks = 0;
         st.webmHeader = null;
 
+        console.log(
+            `[${this.sessionId}][forms] Remaining audio — bytes: ${remaining.length}`
+        );
+
         try {
             const t0 = Date.now();
             const raw = await runWhisperOnBuffer(remaining);
-            console.log(`[${this.sessionId}][forms] Final whisper (remaining): ${Date.now() - t0}ms`);
+            const remainingWhisperMs = Date.now() - t0;
+            const rawChars = raw.length;
+            console.log(
+                `[${this.sessionId}][forms] Remaining whisper — ` +
+                `duration: ${remainingWhisperMs}ms, rawChars: ${rawChars}`
+            );
 
             const wordCount = raw.trim().split(/\s+/).length;
             if (wordCount >= MIN_WORD_COUNT) {
+                const t1 = Date.now();
                 const revised = await reviseTranscription(raw);
+                const remainingReviseMs = Date.now() - t1;
+                console.log(
+                    `[${this.sessionId}][forms] Remaining revise — ` +
+                    `duration: ${remainingReviseMs}ms, revisedChars: ${revised.length}`
+                );
                 [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
             }
         } catch (err) {
@@ -175,7 +223,10 @@ export class FormFillHandler implements TranscriptionHandler {
 
     private async runFinalExtraction(stopStart: number): Promise<void> {
         const st = this.st;
-        console.log(`[${this.sessionId}][forms] Final extraction — transcript: ${st.transcript.length} chars, ${st.template.length} fields`);
+        console.log(
+            `[${this.sessionId}][forms] Final extraction start — ` +
+            `transcriptChars: ${st.transcript.length}, templateFields: ${st.template.length}`
+        );
         const t0 = Date.now();
 
         try {
@@ -188,17 +239,23 @@ export class FormFillHandler implements TranscriptionHandler {
             const finalMs = Date.now() - t0;
             const stopMs = Date.now() - stopStart;
             const sessionMs = Date.now() - this.sessionStartedAt;
+            const finalAttrCount = Object.keys(st.currAttributes).length;
 
             console.log(
                 `[${this.sessionId}][forms] Final complete — ` +
-                `parseFinal: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
-                `session: ${Math.round(sessionMs / 1000)}s, ` +
-                `fields: ${Object.keys(st.currAttributes).length}`
+                `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
+                `session: ${Math.round(sessionMs / 1000)}s, finalAttrCount: ${finalAttrCount}`
             );
 
             this.send({ type: "final_attributes", attributes: st.currAttributes });
         } catch (err) {
-            console.error(`[${this.sessionId}][forms] Final extraction error:`, err);
+            const finalMs = Date.now() - t0;
+            const stopMs = Date.now() - stopStart;
+            console.error(
+                `[${this.sessionId}][forms] Final extraction error — ` +
+                `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms:`,
+                err
+            );
             this.send({ type: "final_attributes", attributes: st.currAttributes });
         }
     }
