@@ -46,6 +46,18 @@
 - Long-term Notes finalisation still needs chunked or rolling-summary synthesis.
 - Raw transcript and notes content must not be logged.
 
+### Notes Finalisation Source Of Truth
+
+- `current_notes` should be treated as the user-visible notes source of truth during finalisation.
+- Final notes may reorganise, deduplicate, and polish content, but should preserve user edits and unique manual clarifications unless clearly contradicted.
+- If a user-applied note is uncertain, keep it under an appropriate verify/open-questions section rather than dropping it.
+
+### Notes Incremental Batching
+
+- Long Notes sessions should not run full notes rewrites for every tiny transcript segment.
+- Revised transcript should be batched before incremental notes GPT updates.
+- On stop, pending revised transcript should be flushed once before the final notes pass instead of draining stale incremental updates one by one.
+
 ### Notes AI Post-Processing Over HTTP
 
 - Future notes Summarise/Reorganise actions should use server-to-server HTTP endpoints on `ws-transcription`.
@@ -53,8 +65,21 @@
 - The browser WebSocket protocol remains focused on live audio transcription only.
 - Do not duplicate OpenAI/Groq provider logic directly in `formify-web` unless this decision is revisited.
 
+### Notes Transform Source Of Truth
+
+- Notes post-processing actions should operate on the current visible notes markdown supplied by `formify-web`.
+- Preview-only transforms do not affect future recording.
+- Only explicit apply/replace actions update the canonical notes markdown that is sent back as continuation context.
+- The backend does not need a `currentNotesOrigin` field for v1.
+
 ### Notes Continuation Context
 
 - Notes mode supports optional continuation context in the `start` payload so multi-segment recordings can resume from current visible notes.
 - Continuation notes seed backend notes state but do not change auth, binary audio handling, or outbound message types.
 - Notes content must not be logged.
+
+### Free-App Safety Limits
+
+- Usage limits and observability are fair-use safeguards, not monetisation.
+- Do not reintroduce Stripe, Pro tiers, subscription checks, or paid feature gates in this repo.
+- Any future diagnostics must avoid raw transcript, notes, or PII content and prefer counts, timings, limits, and status flags.

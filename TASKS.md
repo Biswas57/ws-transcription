@@ -19,7 +19,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 
 | ID | Status | Notes |
 | --- | --- | --- |
-| _None_ | - | No active ticket selected. |
+| T-012 Reduce notes incremental GPT backlog and stop latency | Active | Highest-priority backend reliability ticket. Batch revised transcript before notes GPT updates and flush once on stop to avoid draining stale incremental work. |
 
 ## Backlog
 
@@ -27,24 +27,6 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | --- | --- | --- |
 | T-005 Later: long-session transcript chunking strategy | Backlog | Long-term follow-up after T-010: replace finite Notes final truncation with chunked processing or rolling summaries for very long sessions. |
 | T-007 Add HTTP notes transform endpoints | Backlog | Medium/High priority, medium risk. Add server-to-server HTTP endpoints for notes summarise/reorganise post-processing; keep browser WebSocket focused on live audio transcription. |
-
-### T-007 Add HTTP notes transform endpoints
-
-- Status: Backlog
-- Priority: Medium/High
-- Risk: Medium
-- Goal: Add server-to-server HTTP endpoints in ws-transcription for notes post-processing:
-  - summarise current generated notes
-  - reorganise current notes into requested sections
-- Early design notes:
-  - Endpoint examples: `POST /internal/notes/summarise`, `POST /internal/notes/reorganise`
-  - Summarise input: `{ notesMarkdown: string }`
-  - Reorganise input: `{ notesMarkdown: string, sections: string[] }`
-  - Response: `{ notesMarkdown: string }`
-  - Use internal shared-secret auth, e.g. `x-formify-internal-secret`.
-  - Do not save notes.
-  - Do not accept audio.
-  - Do not log notes content or PII.
-  - Do not change the existing browser WebSocket start/stop/audio protocol.
-  - Reuse `parse-gpt.ts` / existing OpenAI helper patterns where appropriate.
-  - Exact implementation details should be planned later when this ticket becomes active.
+| T-011 Strengthen preservation of user-applied notes in finalisation | Backlog | Prompt-hardening follow-up. Preserve user edits, custom sections, and unique manual clarifications from `current_notes` unless clearly contradicted. |
+| T-013 Free-app usage safety limits and observability | Backlog | Add fair-use safety limits and content-safe usage observability without reintroducing Stripe, Pro tiers, or paywalls. |
+| T-014 Audio variance / VAD optimisation | Backlog | Later optimisation. Consider speech/silence detection after T-012 reduces GPT backlog; do not start with VAD. |
