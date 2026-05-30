@@ -14,6 +14,7 @@
         "parse-gpt.ts",
         "parse-groq.ts",
         "types.ts",
+        "audio/**/*.ts",
         "load/**/*.ts",
         "test/**/*.ts"
     ]

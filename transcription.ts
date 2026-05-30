@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
+import { getVadMode, evaluateBatchVad } from "./audio/vad.js";
+import type { VadDecision } from "./audio/vad.js";
 
 export const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
@@ -115,4 +117,74 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
     }
 
     throw lastError || new Error("All transcription attempts failed");
+}
+
+// ─── Audio batch transcription with optional VAD (T-014b) ─────────────────────
+//
+// transcribeAudioBatch is the single entry point handlers use to turn an audio
+// batch into transcript text. It optionally runs VAD before Whisper to skip
+// obvious no-speech batches, but VAD never drops usable audio: any decode/VAD
+// failure falls back to Whisper, and skip only happens in gate mode under the
+// conservative rule in audio/vad.ts.
+
+export type TranscriptionMode = "notes" | "forms";
+export type TranscriptionReason = "batch" | "stop";
+
+export type AudioBatchTranscriptionResult = {
+    skipped: boolean;
+    transcript: string;
+    whisperMs?: number;
+    vad?: VadDecision;
+};
+
+function vadErrorCategory(err: unknown): string {
+    const message = err instanceof Error ? err.message.toLowerCase() : "";
+    if (message.includes("ffmpeg")) return "decode";
+    if (message.includes("frame processor") || message.includes("model")) return "model";
+    return "vad";
+}
+
+export async function transcribeAudioBatch(input: {
+    audioBuffer: Buffer;
+    sessionId: string;
+    mode: TranscriptionMode;
+    passNum: number;
+    reason: TranscriptionReason;
+}): Promise<AudioBatchTranscriptionResult> {
+    const { audioBuffer, sessionId, mode, passNum, reason } = input;
+    const vadMode = getVadMode();
+
+    // off: existing Whisper path, no VAD work, no VAD logs.
+    if (vadMode === "off") {
+        const whisperStart = Date.now();
+        const transcript = await runWhisperOnBuffer(audioBuffer);
+        return { skipped: false, transcript, whisperMs: Date.now() - whisperStart };
+    }
+
+    // dry-run / gate: run VAD, emit one compact line, fail open to Whisper.
+    let decision: VadDecision | undefined;
+    try {
+        decision = await evaluateBatchVad({ audioBuffer, passNum, reason });
+        console.log(
+            `[${sessionId}][${mode}] vad ` +
+            `pass=${passNum} mode=${vadMode} decision=${decision.decision} ` +
+            `speechMs=${decision.speechMs} batchMs=${decision.batchMs} ` +
+            `peak=${decision.peakProb.toFixed(2)} mean=${decision.meanProb.toFixed(2)} ` +
+            `bytes=${audioBuffer.length} decodeMs=${decision.decodeMs} vadMs=${decision.vadMs}`
+        );
+    } catch (err) {
+        console.warn(
+            `[${sessionId}][${mode}] vad fallback=whisper ` +
+            `mode=${vadMode} pass=${passNum} error=${vadErrorCategory(err)} bytes=${audioBuffer.length}`
+        );
+    }
+
+    // Only gate mode acts on a skip decision; dry-run always continues to Whisper.
+    if (vadMode === "gate" && decision?.decision === "skip") {
+        return { skipped: true, transcript: "", vad: decision };
+    }
+
+    const whisperStart = Date.now();
+    const transcript = await runWhisperOnBuffer(audioBuffer);
+    return { skipped: false, transcript, whisperMs: Date.now() - whisperStart, vad: decision };
 }

@@ -16,7 +16,7 @@ import {
 import {
     checkWebMIntegrity,
     extractWebMInitSegment,
-    runWhisperOnBuffer,
+    transcribeAudioBatch,
     appendWithOverlap,
 } from "../transcription.js";
 import { reviseTranscription, generateNotesIncremental, finalizeNotes } from "../parse-gpt.js";
@@ -197,9 +197,20 @@ export class NotesHandler implements TranscriptionHandler {
             );
 
             try {
-                // Stage 1: Whisper transcription
+                // Stage 1: Whisper transcription (with optional VAD pre-gate).
                 const t0 = Date.now();
-                const transcription = await runWhisperOnBuffer(captureBuffer);
+                const batchResult = await transcribeAudioBatch({
+                    audioBuffer: captureBuffer,
+                    sessionId: this.sessionId,
+                    mode: "notes",
+                    passNum,
+                    reason: "batch",
+                });
+                if (batchResult.skipped) {
+                    console.log(`[${this.sessionId}][notes] Pass ${passNum} — vad skip, no whisper (${Date.now() - passStart}ms)`);
+                    return;
+                }
+                const transcription = batchResult.transcript;
                 console.log(`[${this.sessionId}][notes] Pass ${passNum} — whisper: ${Date.now() - t0}ms, chars: ${transcription.length}`);
 
                 // Stage 2: Transcript revision
@@ -280,7 +291,14 @@ export class NotesHandler implements TranscriptionHandler {
 
             try {
                 const t0 = Date.now();
-                const raw = await runWhisperOnBuffer(remaining);
+                const remainingResult = await transcribeAudioBatch({
+                    audioBuffer: remaining,
+                    sessionId: this.sessionId,
+                    mode: "notes",
+                    passNum: ++this.passCount,
+                    reason: "stop",
+                });
+                const raw = remainingResult.transcript;
                 console.log(`[${this.sessionId}][notes] Remaining whisper: ${Date.now() - t0}ms`);
 
                 const wordCount = raw.trim().split(/\s+/).length;
