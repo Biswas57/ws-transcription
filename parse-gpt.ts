@@ -10,8 +10,16 @@ const GPT_FULL_MODEL = "gpt-5.5";
 const GPT_REASONING_EFFORT = "low" as const;
 // Forms extract discrete fields, so keep a conservative final transcript window.
 const FORM_FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
-// Notes summarise whole sessions, so they need a larger window until T-005 adds chunked/rolling synthesis.
-const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 50000;
+// T-005 (Phase 1): Notes summarise whole sessions, so the final pass needs to see
+// the entire revised transcript. The 120-minute session cap (MAX_NOTES_SESSION_MS)
+// bounds a single session's dense-speech transcript to roughly ~110k chars, so this
+// window is sized to cover a full capped session without dropping the middle.
+// Sessions that approach the cap still log `truncated: true`; if the cap is ever
+// raised/removed, switch to rolling checkpoint digests (T-005 Phase 2 / Option B).
+const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 130000;
+// Final notes are roughly the size of the notes document, not the transcript, so
+// cap the requested output regardless of how large the input transcript grows.
+const NOTES_FINAL_MAX_OUTPUT_TOKENS = 16000;
 // The bundled tiktoken version in this repo does not recognize GPT-5.5 aliases yet.
 const tokenCounter = get_encoding("o200k_base");
 
@@ -193,7 +201,8 @@ function countTokens(text: string): number {
 }
 
 // Preserves the beginning and end for final passes, but may drop middle content.
-// TODO: Replace with chunked or rolling-summary handling for long sessions.
+// With the T-005 Phase 1 window this only triggers for sessions near the 120-min
+// cap; rolling checkpoint digests (T-005 Phase 2 / Option B) would remove the drop.
 function truncateTranscriptPreservingEdges(text: string, maxChars: number): string {
     if (text.length <= maxChars) return text;
     const half = Math.floor(maxChars / 2);
@@ -457,6 +466,13 @@ export async function finalizeNotes(
 
     const truncated = truncateTranscriptPreservingEdges(fullTranscript, NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT);
     const wasTruncated = fullTranscript.length > NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT;
+    const inputTokens = countTokens(truncated) + countTokens(currentNotes);
+    // Output ≈ notes size, so cap it; without a ceiling a large transcript would
+    // request a wastefully large (and possibly out-of-range) completion budget.
+    const maxOutputTokens = Math.min(
+        Math.max(1024, Math.ceil(inputTokens * 1.2)),
+        NOTES_FINAL_MAX_OUTPUT_TOKENS
+    );
     console.log(
         `[notes-final] Context — ` +
         `model: ${GPT_FULL_MODEL}, ` +
@@ -464,10 +480,10 @@ export async function finalizeNotes(
         `transcriptBefore: ${fullTranscript.length}, ` +
         `transcriptAfter: ${truncated.length}, ` +
         `notesChars: ${currentNotes.length}, ` +
-        `truncated: ${wasTruncated}`
+        `truncated: ${wasTruncated}, ` +
+        `inputTokens: ${inputTokens}, ` +
+        `maxOutputTokens: ${maxOutputTokens}`
     );
-    const inputTokens = countTokens(truncated) + countTokens(currentNotes);
-    const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.2));
 
     try {
         const completion = await openai.chat.completions.create({
