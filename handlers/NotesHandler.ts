@@ -6,7 +6,13 @@ import {
     NotesState,
     makeAudioState,
 } from "../types.js";
-import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE, NOTES_CHUNK_PHASES } from "../types.js";
+import {
+    MIN_CHUNK_NUM,
+    MIN_WORD_COUNT,
+    MAX_AUDIO_BUFFER_SIZE,
+    NOTES_CHUNK_PHASES,
+    MAX_NOTES_SESSION_MS,
+} from "../types.js";
 import {
     checkWebMIntegrity,
     extractWebMInitSegment,
@@ -34,6 +40,8 @@ type NotesUpdatePhase = {
     maxWaitMs: number;
     minPendingChars: number;
 };
+
+type StopTrigger = "client" | "session-cap";
 
 function getNotesPhase(elapsedMs: number): NotesUpdatePhase {
     if (elapsedMs <   2 * 60_000) return { name: "early",    maxWaitMs:   7_500, minPendingChars:   80 };
@@ -85,6 +93,8 @@ export class NotesHandler implements TranscriptionHandler {
     private notesUpdatePromise: Promise<void> | null = null;
     private lastNotesUpdateAt = 0;
     private isStopping = false;
+    private sessionCapTimer: NodeJS.Timeout | null = null;
+    private stopPromise: Promise<void> | null = null;
 
     constructor(private socket: WebSocket, private sessionId: string) {
         this.st = {
@@ -119,6 +129,8 @@ export class NotesHandler implements TranscriptionHandler {
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
         this.isStopping = false;
+        this.stopPromise = null;
+        this.startSessionCapTimer();
 
         // Log resolved config only; never log notes content.
         console.log(
@@ -136,6 +148,16 @@ export class NotesHandler implements TranscriptionHandler {
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
         const st = this.st;
+
+        // Once stop begins (manual or session-cap), ignore late-arriving audio
+        // frames so finalisation cannot be prolonged by additional queue jobs.
+        if (this.isStopping) {
+            console.log(
+                `[${this.sessionId}][notes] Chunk ignored during stop — ` +
+                `bytes: ${chunk.length}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
+            );
+            return;
+        }
 
         if (st.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
             console.warn(`[${this.sessionId}][notes] Audio buffer overflow — dropping chunk`);
@@ -218,13 +240,27 @@ export class NotesHandler implements TranscriptionHandler {
     }
 
     async onStop(): Promise<void> {
+        await this.beginStop("client");
+    }
+
+    private beginStop(trigger: StopTrigger): Promise<void> {
+        if (this.stopPromise) return this.stopPromise;
+        this.clearSessionCapTimer();
+        this.stopPromise = this.stopAndFinalize(trigger);
+        return this.stopPromise;
+    }
+
+    private async stopAndFinalize(trigger: StopTrigger): Promise<void> {
         const stopStart = Date.now();
         const st = this.st;
         // Block the scheduler's follow-up check from starting new updates. Any
         // in-flight update still completes and is awaited below; Stop then owns
         // the single pending flush + finalisation.
         this.isStopping = true;
-        console.log(`[${this.sessionId}][notes] Stop received — draining queue (${this.queue.size} queued, ${this.queue.pending} pending)`);
+        console.log(
+            `[${this.sessionId}][notes] Stop received — ` +
+            `trigger: ${trigger}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
+        );
 
         await this.queue.onIdle();
         console.log(`[${this.sessionId}][notes] Queue drained — ${Date.now() - stopStart}ms`);
@@ -338,6 +374,7 @@ export class NotesHandler implements TranscriptionHandler {
     }
 
     onClose(): void {
+        this.clearSessionCapTimer();
         // Stop any future scheduling: an in-flight update's finally-block
         // follow-up checks isStopping, so it won't schedule after close.
         this.isStopping = true;
@@ -347,6 +384,38 @@ export class NotesHandler implements TranscriptionHandler {
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
         console.log(`[${this.sessionId}][notes] Handler closed`);
+    }
+
+    private startSessionCapTimer(): void {
+        this.clearSessionCapTimer();
+        const remainingMs = MAX_NOTES_SESSION_MS - (Date.now() - this.sessionStartedAt);
+        if (remainingMs <= 0) {
+            console.warn(
+                `[${this.sessionId}][notes] Session cap reached immediately — ` +
+                `maxMs: ${MAX_NOTES_SESSION_MS}`
+            );
+            void this.beginStop("session-cap");
+            return;
+        }
+        this.sessionCapTimer = setTimeout(() => {
+            console.warn(
+                `[${this.sessionId}][notes] Session cap reached — ` +
+                `maxMs: ${MAX_NOTES_SESSION_MS}, sessionMs: ${Date.now() - this.sessionStartedAt}`
+            );
+            void this.beginStop("session-cap");
+        }, remainingMs);
+        // Do not keep the process alive solely for a long safety timer.
+        this.sessionCapTimer.unref?.();
+        console.log(
+            `[${this.sessionId}][notes] Session cap armed — ` +
+            `maxMs: ${MAX_NOTES_SESSION_MS}, remainingMs: ${remainingMs}`
+        );
+    }
+
+    private clearSessionCapTimer(): void {
+        if (!this.sessionCapTimer) return;
+        clearTimeout(this.sessionCapTimer);
+        this.sessionCapTimer = null;
     }
 
     // ── Notes-only adaptive audio batch threshold (T-012d) ────────────────────

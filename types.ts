@@ -10,6 +10,7 @@ export const MAX_CACHE_ENTRIES = 500;
 export const MIN_CHUNK_NUM = 10;
 export const MIN_WORD_COUNT = 5;
 export const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
+export const MAX_NOTES_SESSION_MS = 120 * 60_000; // 120 minutes hard safety cap
 
 // NOTES_CHUNK_PHASES (T-012d): Notes-only early audio batching. At ~2s recorder
 // chunks, smaller early batches make revised transcript (and therefore notes
