@@ -14,12 +14,43 @@
 - Binary WebSocket frames after `start` are treated as WebM/Opus audio chunks.
 - The client ends a session with JSON `{ action: "stop" }`.
 - Form outputs currently send `{ type, attributes }`; `corrected_audio` is not part of the runtime payload.
+- WebSocket message shapes should remain stable unless frontend coordination is explicitly planned.
+- Current inbound messages are:
+  - `{ action: "start", mode: "forms", token, blocks }`
+  - `{ action: "start", mode: "notes", token, noteStyle?, sections?, continuation?, currentNotesMarkdown? }`
+  - binary WebM/Opus audio chunks
+  - `{ action: "stop" }`
+- Current outbound messages are:
+  - `{ type: "started", mode }`
+  - `{ type: "attributes_update", attributes }`
+  - `{ type: "final_attributes", attributes }`
+  - `{ type: "notes_update", notesMarkdown }`
+  - `{ type: "notes_final", notesMarkdown }`
+  - `{ type: "error", code, message? }`
+- `transcription-overloaded` is an existing-shape error code used when a per-session reliability/cost-safety queue cap is reached.
 
 ### Handler Ordering
 
 - Form and notes handlers process queued transcription passes with concurrency `1`.
 - This is intentional because session transcript, attributes, and notes state are mutated sequentially.
 - Any future parallelism needs sequence guards before applying results.
+- Handlers also guard against closed/stale async continuations. In-flight Whisper/GPT work must check handler state before mutating state, queueing follow-up model work, or sending WebSocket messages.
+- Old sessions must not emit `attributes_update`, `final_attributes`, `notes_update`, or `notes_final` into newer sessions on the same socket.
+
+### Forms Short-Value Sensitivity
+
+- Forms mode must preserve short meaningful values such as `yes`, `no`, `John`, `Tuesday`, `$500`, `3pm`, `N/A`, single-word names, and one-word options.
+- Forms must not use Notes-style global `MIN_WORD_COUNT = 5` filtering.
+- Forms should accept non-empty meaningful transcript for final extraction.
+- Forms VAD gate remains disabled; do not route Forms short values through Notes gate behaviour.
+
+### Stop And Backpressure
+
+- Forms and Notes stop paths are idempotent.
+- Late audio after stop begins is ignored.
+- Forms final attributes should be sent at most once.
+- Per-session queue caps prevent unbounded transcription/revision backlog.
+- Queue overload is a reliability/fair-use/cost-safety safeguard, not monetisation, and uses existing-shape error code `transcription-overloaded`.
 
 ### Package Manager And Runtime
 
@@ -57,6 +88,20 @@
 - Long Notes sessions should not run full notes rewrites for every tiny transcript segment.
 - Revised transcript should be batched before incremental notes GPT updates.
 - On stop, pending revised transcript should be flushed once before the final notes pass instead of draining stale incremental updates one by one.
+- Coalescing happens after Whisper/revision, before notes update:
+
+```txt
+audio batch
+-> Whisper transcription
+-> reviseTranscription
+-> revised transcript text
+-> append to pendingNotesTranscript
+-> maybe run generateNotesIncremental
+```
+
+- Coalescing is not raw audio batching. It combines revised transcript text before a Notes GPT update.
+- After Stop, Notes stops receiving new audio, finishes accepted transcription/revision work, runs at most one stop-flush notes update if pending transcript exists, then runs one final notes pass.
+- Stop must not drain a stale incremental GPT backlog.
 
 ### Notes AI Post-Processing Over HTTP
 
@@ -64,6 +109,9 @@
 - `formify-web` should call those endpoints from protected tRPC/server code.
 - The browser WebSocket protocol remains focused on live audio transcription only.
 - Do not duplicate OpenAI/Groq provider logic directly in `formify-web` unless this decision is revisited.
+- Planned internal endpoints are `POST /internal/notes/summarise` and `POST /internal/notes/reorganise`.
+- Likely internal auth header: `x-formify-internal-secret: <INTERNAL_TRANSFORM_SECRET>`.
+- Internal HTTP routes require an HTTP-capable server entrypoint while preserving current WebSocket behaviour.
 
 ### Notes Transform Source Of Truth
 
@@ -77,9 +125,25 @@
 - Notes mode supports optional continuation context in the `start` payload so multi-segment recordings can resume from current visible notes.
 - Continuation notes seed backend notes state but do not change auth, binary audio handling, or outbound message types.
 - Notes content must not be logged.
+- Continuation uses `continuation: true` plus `currentNotesMarkdown`.
+- The backend seeds from supplied current notes markdown; the old full transcript is not required.
+
+### Notes VAD
+
+- Supported VAD modes are `off`, `dry-run`, and `gate`.
+- Default is `off`.
+- VAD fails open to Whisper.
+- Gate mode is intended for Notes only; Forms are not gated.
+- Stop flush must never be skipped by VAD.
+- VAD logs safe metadata only, never raw audio/transcript/notes.
 
 ### Free-App Safety Limits
 
 - Usage limits and observability are fair-use safeguards, not monetisation.
 - Do not reintroduce Stripe, Pro tiers, subscription checks, or paid feature gates in this repo.
 - Any future diagnostics must avoid raw transcript, notes, or PII content and prefer counts, timings, limits, and status flags.
+
+### Logging And Privacy
+
+- Runtime logs must not include raw user IDs, raw client close reasons, Notes section names, unknown field keys, final attributes, transcripts, notes, form values, JWTs/tokens, or secrets.
+- Safe logs include counts, lengths, timings, mode, booleans, safe error names/codes, truncation flags, and VAD metadata without content.

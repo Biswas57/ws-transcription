@@ -31,9 +31,9 @@ The main Formify web app is separate from this repo. This server expects the web
 - `transcription.ts`: WebM validation/header handling, Whisper API call, transcript overlap merge.
 - `parse-gpt.ts`: OpenAI GPT prompts and calls for transcript revision, field extraction, final verification, note generation.
 - `ws-token.ts`: JWT mint/verify helpers for WebSocket session tokens.
-- `parse-groq.ts`: older Groq-based parser path; not used by the active handlers.
+- `parse-groq.ts`: older Groq-based parser path if present in the working tree; not used by the active handlers.
 - `load/`: WebSocket load-test harness.
-- `test/`: local WebSocket test clients.
+- `test/`: local WebSocket test clients and focused backend tests.
 - `unused/`: currently untracked/unused modules moved out of active compilation.
 
 ## Commands
@@ -93,11 +93,16 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `WS_TOKEN_SECRET`: required by both the web app token minting path and this WebSocket server.
 - `ALLOWED_ORIGIN`: optional exact origin allowlist for WebSocket connections.
 - `WS_URL`: optional local test/load client target URL.
-- `GROQ_API_KEY`: only relevant to the older `parse-groq.ts` path.
+- `GROQ_API_KEY`: only relevant to the older Groq parser path if that legacy file is present.
+- `VAD_MODE`: optional Notes VAD mode, one of `off`, `dry-run`, or `gate`; default is `off`.
+- `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
+- `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
 
 ## WebSocket Contract
 
 The client connects to the WebSocket server, sends JSON text control messages, and streams binary audio frames.
+
+WebSocket message shapes should remain stable unless frontend coordination is explicitly planned. The backend does not send `corrected_audio`. The existing-shape error code `transcription-overloaded` may be sent when a per-session reliability/cost-safety queue cap is reached.
 
 ### Inbound: Forms Start
 
@@ -192,17 +197,76 @@ Error:
 }
 ```
 
+Possible error codes include auth/session errors such as `missing-token`, `invalid-token`, `mode-mismatch`, `bad-json`, `unknown-action`, and backend processing errors such as `audio-buffer-overflow`, `transcription-failed`, and `transcription-overloaded`.
+
 ## Audio And Parsing Flow
 
 1. Client sends `start`; server verifies the JWT and selects the handler.
 2. Client streams WebM/Opus chunks as binary WebSocket frames.
-3. Handler buffers chunks until `MIN_CHUNK_NUM`.
+3. Handler buffers chunks until the mode-specific chunk threshold.
 4. Handler snapshots the buffer and processes it sequentially.
 5. Whisper transcribes the audio buffer.
 6. GPT revises the transcript segment.
 7. Forms mode extracts attributes; notes mode updates Markdown notes.
 8. Server sends incremental updates.
 9. On `stop`, queued work drains, remaining audio is processed, and a final GPT pass runs.
+
+### Forms Operating Invariants
+
+- Forms must preserve short meaningful values such as `yes`, `no`, `John`, `Tuesday`, `$500`, `3pm`, `N/A`, single-word names, and one-word options.
+- Forms must not use Notes-style `MIN_WORD_COUNT = 5` filtering.
+- Forms accepts non-empty meaningful transcript for incremental/final extraction.
+- Forms VAD gate remains disabled.
+- Forms stop is idempotent; duplicate stop cannot duplicate finalisation.
+- Late audio after stop begins is ignored.
+- Final attributes should be sent at most once.
+
+### Notes Operating Invariants
+
+Notes coalescing happens after Whisper/revision, before notes update:
+
+```txt
+audio batch
+-> Whisper transcription
+-> reviseTranscription
+-> revised transcript text
+-> append to pendingNotesTranscript
+-> maybe run generateNotesIncremental
+```
+
+Coalescing is not raw audio batching. It combines revised transcript text before a Notes GPT update.
+
+After Stop:
+
+1. Stop receiving new audio.
+2. Finish accepted transcription/revision work.
+3. Run at most one stop-flush notes update if pending transcript exists.
+4. Run one final notes pass.
+
+Do not drain stale incremental GPT backlog.
+
+Continuation uses `continuation: true` and `currentNotesMarkdown`. The backend seeds from supplied current notes markdown; the old full transcript is not required.
+
+VAD modes are `off`, `dry-run`, and `gate`. VAD defaults to `off`, fails open to Whisper, is intended for Notes gate behaviour only, does not gate Forms, must never skip stop flush, and logs safe metadata only.
+
+### Handler Lifecycle And Backpressure
+
+- Forms and Notes handlers guard against closed/stale async continuations.
+- In-flight Whisper/GPT completions must check handler state before mutating state, queueing follow-up model work, or sending messages.
+- Old sessions must not emit `attributes_update`, `final_attributes`, `notes_update`, or `notes_final` into newer sessions on the same socket.
+- Per-session queue caps prevent unbounded transcription/revision backlog.
+- Overloaded sessions send existing-shape error code `transcription-overloaded` and ignore further chunks until stop/close.
+- Queue caps are reliability/fair-use/cost-safety controls, not monetisation.
+
+### Revision Failure Behaviour
+
+If Whisper succeeds but `reviseTranscription` fails, the backend must return raw Whisper text rather than dropping the segment. Logs should include safe metadata only.
+
+### Logging And Privacy
+
+Runtime logs must not include raw user IDs, raw client close reasons, Notes section names, unknown field keys, final attributes, transcripts, notes, form values, JWTs/tokens, or secrets.
+
+Safe logs include counts, lengths, timings, mode, booleans, safe error names/codes, truncation flags, and VAD metadata without content.
 
 ## Safe-Change Rules
 
@@ -216,13 +280,18 @@ Error:
 - Prefer small, typed protocol changes in `types.ts` before changing runtime payloads.
 - Do not wire unused cache/cost modules back in without a specific design.
 - Run `pnpm build` after TypeScript changes.
+- Do not add Stripe, Pro tiers, subscriptions, upgrade paths, premium gates, pricing logic, or paywalls. Backend controls are allowed only for reliability, fair-use, cost-safety, and abuse prevention.
+- Do not start HTTP notes transform endpoints unless explicitly requested.
 
 ## Known Risks
 
 - Final GPT passes currently use a fixed character limit and preserve the beginning/end of long transcripts while dropping the middle.
+- Verify `NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT` with production/beta `truncated: true` logs and dense long-session simulations before changing it.
 - Handler queues are intentionally concurrency `1`; increasing concurrency can corrupt transcript, attributes, or notes ordering unless sequence guards are added.
 - `corrected_audio` is not currently sent in form update/final messages. Reintroducing it needs frontend coordination.
-- Tests and load tests require a running WebSocket server.
-- Load tests exercise real OpenAI calls unless mocked elsewhere, so they can incur cost.
-- `parse-groq.ts` remains as an unused alternate path and may drift from the active OpenAI implementation.
+- The older Groq parser path is not active and may be absent or drift from the active OpenAI implementation.
 - `unused/` contains non-active modules and should not be assumed part of the runtime.
+
+## Ticket Source Of Truth
+
+Use `TASKS.md` as the current ticket list. Keep `DECISIONS.md` and this file as durable context, not short-term status reports.
