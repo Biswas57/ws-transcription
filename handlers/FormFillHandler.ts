@@ -4,10 +4,14 @@ import {
     TranscriptionHandler,
     StartPayload,
     FormFillState,
-    FieldDef,
     makeAudioState,
 } from "../types.js";
-import { MIN_CHUNK_NUM, MIN_WORD_COUNT, MAX_AUDIO_BUFFER_SIZE } from "../types.js";
+import {
+    MIN_CHUNK_NUM,
+    FORMS_MIN_TRANSCRIPT_CHARS,
+    MAX_AUDIO_BUFFER_SIZE,
+    MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS,
+} from "../types.js";
 import {
     checkWebMIntegrity,
     extractWebMInitSegment,
@@ -15,9 +19,15 @@ import {
     appendWithOverlap,
 } from "../transcription.js";
 import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "../parse-gpt.js";
+import { safeErrorInfo } from "../safe-log.js";
 
 function normalizeKey(key: string): string {
     return key.trim().toLowerCase().replace(/[\s\-]+/g, "_");
+}
+
+export function isMeaningfulFormTranscript(text: string): boolean {
+    const trimmed = text.trim();
+    return trimmed.length >= FORMS_MIN_TRANSCRIPT_CHARS && /[A-Za-z0-9$]/.test(trimmed);
 }
 
 export class FormFillHandler implements TranscriptionHandler {
@@ -25,6 +35,11 @@ export class FormFillHandler implements TranscriptionHandler {
     private queue: PQueue;
     private passCount = 0;
     private sessionStartedAt = 0;
+    private closed = false;
+    private isStopping = false;
+    private stopPromise: Promise<void> | null = null;
+    private finalSent = false;
+    private overloadSignaled = false;
 
     constructor(private socket: WebSocket, private sessionId: string) {
         this.st = {
@@ -38,12 +53,17 @@ export class FormFillHandler implements TranscriptionHandler {
     }
 
     async onStart(payload: StartPayload): Promise<void> {
+        if (this.closed) return;
         if (payload.mode !== "forms") return;
 
         this.st.template = [];
         this.st.currAttributes = {};
         this.passCount = 0;
         this.sessionStartedAt = Date.now();
+        this.isStopping = false;
+        this.stopPromise = null;
+        this.finalSent = false;
+        this.overloadSignaled = false;
 
         for (const blockName of Object.keys(payload.blocks ?? {})) {
             const fields = payload.blocks[blockName];
@@ -60,6 +80,33 @@ export class FormFillHandler implements TranscriptionHandler {
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
+        if (this.closed || this.isStopping || this.finalSent) {
+            console.log(
+                `[${this.sessionId}][forms] Chunk ignored after stop/close — ` +
+                `bytes: ${chunk.length}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
+            );
+            return;
+        }
+
+        if (this.overloadSignaled) return;
+
+        if (this.queueLoad() >= MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS) {
+            if (!this.overloadSignaled) {
+                this.overloadSignaled = true;
+                console.warn(
+                    `[${this.sessionId}][forms] Queue overloaded — ` +
+                    `queue: ${this.queue.size} queued, ${this.queue.pending} pending, ` +
+                    `maxJobs: ${MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS}`
+                );
+                this.send({
+                    type: "error",
+                    code: "transcription-overloaded",
+                    message: "Recording processing is temporarily overloaded. Please stop and try again.",
+                });
+            }
+            return;
+        }
+
         const st = this.st;
 
         if (st.audioBuffer.length + chunk.length > MAX_AUDIO_BUFFER_SIZE) {
@@ -91,6 +138,7 @@ export class FormFillHandler implements TranscriptionHandler {
         const queuePendingAtEnqueue = this.queue.pending;
 
         this.queue.add(async () => {
+            if (this.closed) return;
             const passStart = Date.now();
             console.log(
                 `[${this.sessionId}][forms] Pass ${passNum} start — ` +
@@ -102,6 +150,7 @@ export class FormFillHandler implements TranscriptionHandler {
                 // Stage 1: Whisper
                 const t0 = Date.now();
                 const transcription = await runWhisperOnBuffer(captureBuffer);
+                if (this.closed) return;
                 const whisperMs = Date.now() - t0;
                 const rawChars = transcription.length;
                 console.log(
@@ -112,6 +161,7 @@ export class FormFillHandler implements TranscriptionHandler {
                 // Stage 2: Revision
                 const t1 = Date.now();
                 const revised = await reviseTranscription(transcription);
+                if (this.closed) return;
                 const reviseMs = Date.now() - t1;
                 const revisedChars = revised.length;
                 console.log(
@@ -119,12 +169,11 @@ export class FormFillHandler implements TranscriptionHandler {
                     `revise: ${reviseMs}ms, revisedChars: ${revisedChars}`
                 );
 
-                const wordCount = revised.trim().split(/\s+/).length;
-                if (wordCount < MIN_WORD_COUNT) {
+                if (!isMeaningfulFormTranscript(revised)) {
                     const passMs = Date.now() - passStart;
                     console.log(
                         `[${this.sessionId}][forms] Pass ${passNum} skipped — ` +
-                        `tooShort: ${wordCount} words, passMs: ${passMs}`
+                        `emptyOrNoise: true, revisedChars: ${revised.trim().length}, passMs: ${passMs}`
                     );
                     return;
                 }
@@ -136,6 +185,7 @@ export class FormFillHandler implements TranscriptionHandler {
                 // Stage 3: Attribute extraction
                 const t2 = Date.now();
                 const extracted = await extractAttributesFromText(window, st.template, st.currAttributes);
+                if (this.closed) return;
                 st.currAttributes = { ...st.currAttributes, ...extracted };
                 const extractMs = Date.now() - t2;
                 const passMs = Date.now() - passStart;
@@ -151,8 +201,7 @@ export class FormFillHandler implements TranscriptionHandler {
             } catch (e) {
                 console.error(
                     `[${this.sessionId}][forms] Pass ${passNum} failed — ` +
-                    `passMs: ${Date.now() - passStart}ms:`,
-                    e
+                    `passMs: ${Date.now() - passStart}ms, error: ${safeErrorInfo(e)}`
                 );
                 this.send({ type: "error", code: "transcription-failed" });
             }
@@ -160,6 +209,13 @@ export class FormFillHandler implements TranscriptionHandler {
     }
 
     async onStop(): Promise<void> {
+        if (this.stopPromise) return this.stopPromise;
+        this.isStopping = true;
+        this.stopPromise = this.stopAndFinalize();
+        return this.stopPromise;
+    }
+
+    private async stopAndFinalize(): Promise<void> {
         const stopStart = Date.now();
         const st = this.st;
         const queueSizeAtStop = this.queue.size;
@@ -171,6 +227,7 @@ export class FormFillHandler implements TranscriptionHandler {
 
         const drainStart = Date.now();
         await this.queue.onIdle();
+        if (this.closed) return;
         const drainMs = Date.now() - drainStart;
         console.log(`[${this.sessionId}][forms] Queue drained — ${drainMs}ms`);
 
@@ -196,6 +253,7 @@ export class FormFillHandler implements TranscriptionHandler {
         try {
             const t0 = Date.now();
             const raw = await runWhisperOnBuffer(remaining);
+            if (this.closed) return;
             const remainingWhisperMs = Date.now() - t0;
             const rawChars = raw.length;
             console.log(
@@ -203,25 +261,31 @@ export class FormFillHandler implements TranscriptionHandler {
                 `duration: ${remainingWhisperMs}ms, rawChars: ${rawChars}`
             );
 
-            const wordCount = raw.trim().split(/\s+/).length;
-            if (wordCount >= MIN_WORD_COUNT) {
+            if (isMeaningfulFormTranscript(raw)) {
                 const t1 = Date.now();
                 const revised = await reviseTranscription(raw);
+                if (this.closed) return;
                 const remainingReviseMs = Date.now() - t1;
                 console.log(
                     `[${this.sessionId}][forms] Remaining revise — ` +
                     `duration: ${remainingReviseMs}ms, revisedChars: ${revised.length}`
                 );
                 [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
+            } else {
+                console.log(
+                    `[${this.sessionId}][forms] Remaining audio skipped — ` +
+                    `emptyOrNoise: true, rawChars: ${raw.trim().length}`
+                );
             }
         } catch (err) {
-            console.error(`[${this.sessionId}][forms] Error on remaining audio:`, err);
+            console.error(`[${this.sessionId}][forms] Error on remaining audio — ${safeErrorInfo(err)}`);
         }
 
         await this.runFinalExtraction(stopStart);
     }
 
     private async runFinalExtraction(stopStart: number): Promise<void> {
+        if (this.closed || this.finalSent) return;
         const st = this.st;
         console.log(
             `[${this.sessionId}][forms] Final extraction start — ` +
@@ -235,6 +299,7 @@ export class FormFillHandler implements TranscriptionHandler {
                 st.template,
                 st.currAttributes
             );
+            if (this.closed || this.finalSent) return;
 
             const finalMs = Date.now() - t0;
             const stopMs = Date.now() - stopStart;
@@ -247,26 +312,35 @@ export class FormFillHandler implements TranscriptionHandler {
                 `session: ${Math.round(sessionMs / 1000)}s, finalAttrCount: ${finalAttrCount}`
             );
 
+            this.finalSent = true;
             this.send({ type: "final_attributes", attributes: st.currAttributes });
         } catch (err) {
+            if (this.closed || this.finalSent) return;
             const finalMs = Date.now() - t0;
             const stopMs = Date.now() - stopStart;
             console.error(
                 `[${this.sessionId}][forms] Final extraction error — ` +
-                `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms:`,
-                err
+                `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms, error: ${safeErrorInfo(err)}`
             );
+            this.finalSent = true;
             this.send({ type: "final_attributes", attributes: st.currAttributes });
         }
     }
 
     onClose(): void {
+        if (this.closed) return;
+        this.closed = true;
+        this.isStopping = true;
         this.queue.clear();
         console.log(`[${this.sessionId}][forms] Handler closed`);
     }
 
+    private queueLoad(): number {
+        return this.queue.size + this.queue.pending;
+    }
+
     private send(msg: object): void {
-        if (this.socket.readyState === this.socket.OPEN) {
+        if (!this.closed && this.socket.readyState === this.socket.OPEN) {
             this.socket.send(JSON.stringify(msg));
         }
     }

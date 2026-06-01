@@ -2,12 +2,14 @@ import dotenv from "dotenv";
 dotenv.config();
 import { getVadMode, evaluateBatchVad } from "./audio/vad.js";
 import type { VadDecision } from "./audio/vad.js";
+import { safeErrorInfo } from "./safe-log.js";
 
 export const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 
 const MIN_AUDIO_SIZE_BYTES = 1000;
 const MAX_RETRIES = 2;
+const WHISPER_REQUEST_TIMEOUT_MS = Number(process.env.WHISPER_REQUEST_TIMEOUT_MS ?? 60_000);
 
 export function checkWebMIntegrity(data: Buffer): boolean {
     return data.length >= 4 && data.readUInt32BE(0) === 0x1a45dfa3;
@@ -72,25 +74,31 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
     //     return "";
     // }
 
-    const whisperForm = new FormData();
-    const blob = new Blob([new Uint8Array(buffer)], { type: "audio/webm" });
-    whisperForm.append("model", "whisper-1");
-    whisperForm.set("file", blob, "audio.webm");
-
     let lastError: Error | null = null;
 
     // Implement retry logic for resilience
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const whisperForm = new FormData();
+        const blob = new Blob([new Uint8Array(buffer)], { type: "audio/webm" });
+        whisperForm.append("model", "whisper-1");
+        whisperForm.set("file", blob, "audio.webm");
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), WHISPER_REQUEST_TIMEOUT_MS);
+
         try {
             const res = await fetch(WHISPER_API_URL, {
                 method: "POST",
                 headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
                 body: whisperForm,
+                signal: controller.signal,
             });
 
             if (!res.ok) {
-                const err = await res.text();
-                throw new Error(`Whisper API error ${res.status}: ${err}`);
+                await res.text();
+                const err = new Error(`Whisper API error ${res.status}`);
+                (err as Error & { status?: number }).status = res.status;
+                throw err;
             }
 
             const payload = (await res.json()) as { text?: string };
@@ -102,10 +110,13 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
 
         } catch (error) {
             lastError = error as Error;
-            console.warn(`Whisper API attempt ${attempt} failed:`, error);
+            console.warn(`Whisper API attempt ${attempt} failed — ${safeErrorInfo(error)}`);
 
             // Don't retry on client errors (4xx), only on server errors or network issues
-            if (error instanceof Error && error.message.includes('400')) {
+            const status = typeof (error as { status?: unknown }).status === "number"
+                ? (error as { status: number }).status
+                : undefined;
+            if (status !== undefined && status >= 400 && status < 500) {
                 break;
             }
 
@@ -113,6 +124,8 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
                 // Exponential backoff
                 await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
             }
+        } finally {
+            clearTimeout(timeout);
         }
     }
 

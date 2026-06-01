@@ -8,10 +8,11 @@ import {
 } from "../types.js";
 import {
     MIN_CHUNK_NUM,
-    MIN_WORD_COUNT,
+    NOTES_MIN_WORD_COUNT,
     MAX_AUDIO_BUFFER_SIZE,
     NOTES_CHUNK_PHASES,
     MAX_NOTES_SESSION_MS,
+    MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS,
 } from "../types.js";
 import {
     checkWebMIntegrity,
@@ -20,6 +21,7 @@ import {
     appendWithOverlap,
 } from "../transcription.js";
 import { reviseTranscription, generateNotesIncremental, finalizeNotes } from "../parse-gpt.js";
+import { safeErrorInfo } from "../safe-log.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
 //
@@ -70,6 +72,11 @@ function normalizeContinuationNotes(markdown: string): { markdown: string; trunc
     };
 }
 
+function countWords(text: string): number {
+    const trimmed = text.trim();
+    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+}
+
 export class NotesHandler implements TranscriptionHandler {
     private st: NotesState;
     private queue: PQueue;
@@ -95,6 +102,8 @@ export class NotesHandler implements TranscriptionHandler {
     private isStopping = false;
     private sessionCapTimer: NodeJS.Timeout | null = null;
     private stopPromise: Promise<void> | null = null;
+    private closed = false;
+    private overloadSignaled = false;
 
     constructor(private socket: WebSocket, private sessionId: string) {
         this.st = {
@@ -109,10 +118,22 @@ export class NotesHandler implements TranscriptionHandler {
     }
 
     async onStart(payload: StartPayload): Promise<void> {
+        if (this.closed) return;
         if (payload.mode !== "notes") return;
 
-        this.st.noteStyle = payload.noteStyle ?? "general";
-        this.st.sections = payload.sections ?? [];
+        this.st.noteStyle =
+            payload.noteStyle === "clinical" ||
+                payload.noteStyle === "meeting" ||
+                payload.noteStyle === "study" ||
+                payload.noteStyle === "general"
+                ? payload.noteStyle
+                : "general";
+        this.st.sections = Array.isArray(payload.sections)
+            ? payload.sections
+                .filter((section): section is string => typeof section === "string")
+                .map((section) => section.trim())
+                .filter((section) => section.length > 0)
+            : [];
         const continuationRequested = payload.continuation === true;
         const providedNotesChars = typeof payload.currentNotesMarkdown === "string" ? payload.currentNotesMarkdown.length : 0;
         const continuation = continuationRequested && typeof payload.currentNotesMarkdown === "string"
@@ -130,13 +151,15 @@ export class NotesHandler implements TranscriptionHandler {
         this.notesUpdatePromise = null;
         this.isStopping = false;
         this.stopPromise = null;
+        this.overloadSignaled = false;
         this.startSessionCapTimer();
 
         // Log resolved config only; never log notes content.
         console.log(
             `[${this.sessionId}][notes] Session start — ` +
             `style: "${this.st.noteStyle}", ` +
-            `sections: [${this.st.sections.length > 0 ? this.st.sections.map(s => `"${s}"`).join(", ") : "none"}], ` +
+            `sectionsCount: ${this.st.sections.length}, ` +
+            `sectionsChars: ${this.st.sections.reduce((sum, section) => sum + section.length, 0)}, ` +
             `continuation: ${continuationRequested}, ` +
             `providedNotesChars: ${providedNotesChars}, ` +
             `seededNotesChars: ${this.st.currentMarkdown.length}, ` +
@@ -147,6 +170,7 @@ export class NotesHandler implements TranscriptionHandler {
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
+        if (this.closed) return;
         const st = this.st;
 
         // Once stop begins (manual or session-cap), ignore late-arriving audio
@@ -156,6 +180,25 @@ export class NotesHandler implements TranscriptionHandler {
                 `[${this.sessionId}][notes] Chunk ignored during stop — ` +
                 `bytes: ${chunk.length}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
             );
+            return;
+        }
+
+        if (this.overloadSignaled) return;
+
+        if (this.queueLoad() >= MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS) {
+            if (!this.overloadSignaled) {
+                this.overloadSignaled = true;
+                console.warn(
+                    `[${this.sessionId}][notes] Queue overloaded — ` +
+                    `queue: ${this.queue.size} queued, ${this.queue.pending} pending, ` +
+                    `maxJobs: ${MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS}`
+                );
+                this.send({
+                    type: "error",
+                    code: "transcription-overloaded",
+                    message: "Recording processing is temporarily overloaded. Please stop and try again.",
+                });
+            }
             return;
         }
 
@@ -190,6 +233,7 @@ export class NotesHandler implements TranscriptionHandler {
         const passNum = ++this.passCount;
 
         this.queue.add(async () => {
+            if (this.closed) return;
             const passStart = Date.now();
             console.log(
                 `[${this.sessionId}][notes] Pass ${passNum} start — ` +
@@ -206,6 +250,7 @@ export class NotesHandler implements TranscriptionHandler {
                     passNum,
                     reason: "batch",
                 });
+                if (this.closed) return;
                 if (batchResult.skipped) {
                     console.log(`[${this.sessionId}][notes] Pass ${passNum} — vad skip, no whisper (${Date.now() - passStart}ms)`);
                     return;
@@ -216,10 +261,11 @@ export class NotesHandler implements TranscriptionHandler {
                 // Stage 2: Transcript revision
                 const t1 = Date.now();
                 const revised = await reviseTranscription(transcription);
+                if (this.closed) return;
                 console.log(`[${this.sessionId}][notes] Pass ${passNum} — revise: ${Date.now() - t1}ms`);
 
-                const wordCount = revised.trim().split(/\s+/).length;
-                if (wordCount < MIN_WORD_COUNT) {
+                const wordCount = countWords(revised);
+                if (wordCount < NOTES_MIN_WORD_COUNT) {
                     console.log(`[${this.sessionId}][notes] Pass ${passNum} — too short (${wordCount} words), skipping`);
                     return;
                 }
@@ -244,7 +290,7 @@ export class NotesHandler implements TranscriptionHandler {
                 void this.maybeScheduleNotesUpdate();
 
             } catch (e) {
-                console.error(`[${this.sessionId}][notes] Pass ${passNum} failed after ${Date.now() - passStart}ms:`, e);
+                console.error(`[${this.sessionId}][notes] Pass ${passNum} failed after ${Date.now() - passStart}ms — ${safeErrorInfo(e)}`);
                 this.send({ type: "error", code: "transcription-failed" });
             }
         });
@@ -256,6 +302,7 @@ export class NotesHandler implements TranscriptionHandler {
 
     private beginStop(trigger: StopTrigger): Promise<void> {
         if (this.stopPromise) return this.stopPromise;
+        if (this.closed) return Promise.resolve();
         this.clearSessionCapTimer();
         this.stopPromise = this.stopAndFinalize(trigger);
         return this.stopPromise;
@@ -274,6 +321,7 @@ export class NotesHandler implements TranscriptionHandler {
         );
 
         await this.queue.onIdle();
+        if (this.closed) return;
         console.log(`[${this.sessionId}][notes] Queue drained — ${Date.now() - stopStart}ms`);
 
         let remaining = st.audioBuffer;
@@ -298,22 +346,25 @@ export class NotesHandler implements TranscriptionHandler {
                     passNum: ++this.passCount,
                     reason: "stop",
                 });
+                if (this.closed) return;
                 const raw = remainingResult.transcript;
                 console.log(`[${this.sessionId}][notes] Remaining whisper: ${Date.now() - t0}ms`);
 
-                const wordCount = raw.trim().split(/\s+/).length;
-                if (wordCount >= MIN_WORD_COUNT) {
+                const wordCount = countWords(raw);
+                if (wordCount >= NOTES_MIN_WORD_COUNT) {
                     const revised = await reviseTranscription(raw);
+                    if (this.closed) return;
                     [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
 
                     this.pendingNotesTranscript +=
                         (this.pendingNotesTranscript.length > 0 ? "\n\n" : "") + revised;
                 }
             } catch (err) {
-                console.error(`[${this.sessionId}][notes] Error on remaining audio:`, err);
+                console.error(`[${this.sessionId}][notes] Error on remaining audio — ${safeErrorInfo(err)}`);
             }
         }
 
+        if (this.closed) return;
         const hadInFlight = this.notesUpdatePromise !== null;
         console.log(
             `[${this.sessionId}][notes] Stop flush prep — ` +
@@ -328,6 +379,7 @@ export class NotesHandler implements TranscriptionHandler {
         if (inFlightNotesUpdate) {
             await inFlightNotesUpdate;
         }
+        if (this.closed) return;
 
         if (this.pendingNotesTranscript.trim().length > 0) {
             const pendingBatch = this.pendingNotesTranscript;
@@ -345,6 +397,7 @@ export class NotesHandler implements TranscriptionHandler {
                     st.noteStyle,
                     st.sections,
                 );
+                if (this.closed) return;
                 st.currentMarkdown = updated;
                 this.send({ type: "notes_update", notesMarkdown: updated });
                 console.log(
@@ -355,12 +408,12 @@ export class NotesHandler implements TranscriptionHandler {
             } catch (e) {
                 console.error(
                     `[${this.sessionId}][notes] Stop flush failed after ` +
-                    `${Date.now() - flushStart}ms:`,
-                    e
+                    `${Date.now() - flushStart}ms — ${safeErrorInfo(e)}`
                 );
             }
         }
 
+        if (this.closed) return;
         // Final GPT-5.4 polish pass
         console.log(`[${this.sessionId}][notes] Starting final pass — transcript: ${st.transcript.length} chars`);
         const finalStart = Date.now();
@@ -372,6 +425,7 @@ export class NotesHandler implements TranscriptionHandler {
                 this.st.noteStyle,
                 this.st.sections
             );
+            if (this.closed) return;
 
             const finalMs = Date.now() - finalStart;
             const stopMs = Date.now() - stopStart;
@@ -386,12 +440,14 @@ export class NotesHandler implements TranscriptionHandler {
             st.currentMarkdown = finalMarkdown;
             this.send({ type: "notes_final", notesMarkdown: finalMarkdown });
         } catch (err) {
-            console.error(`[${this.sessionId}][notes] Final pass error:`, err);
+            console.error(`[${this.sessionId}][notes] Final pass error — ${safeErrorInfo(err)}`);
             this.send({ type: "notes_final", notesMarkdown: st.currentMarkdown });
         }
     }
 
     onClose(): void {
+        if (this.closed) return;
+        this.closed = true;
         this.clearSessionCapTimer();
         // Stop any future scheduling: an in-flight update's finally-block
         // follow-up checks isStopping, so it won't schedule after close.
@@ -464,6 +520,7 @@ export class NotesHandler implements TranscriptionHandler {
     // On error: restores the batch to pendingNotesTranscript so content is
     // not silently dropped — will retry on the next maybeScheduleNotesUpdate call.
     private maybeScheduleNotesUpdate(): void {
+        if (this.closed) return;
         // Once Stop has begun, do not start new scheduled updates (including the
         // finally-block follow-up). Stop awaits the in-flight update, then runs
         // exactly one flush + finalisation.
@@ -500,6 +557,7 @@ export class NotesHandler implements TranscriptionHandler {
                     this.st.noteStyle,
                     this.st.sections,
                 );
+                if (this.closed) return;
                 this.st.currentMarkdown = updated;
                 this.lastNotesUpdateAt = Date.now();
                 console.log(
@@ -511,15 +569,17 @@ export class NotesHandler implements TranscriptionHandler {
             } catch (e) {
                 console.error(
                     `[${this.sessionId}][notes] Scheduled update failed after ` +
-                    `${Date.now() - updateStart}ms:`, e
+                    `${Date.now() - updateStart}ms — ${safeErrorInfo(e)}`
                 );
                 // Restore batch so content isn't silently dropped.
                 // Prepend so existing pending (from jobs that ran during the
                 // failed update) stays in correct chronological order.
-                this.pendingNotesTranscript =
-                    batch + (this.pendingNotesTranscript.length > 0
-                        ? "\n\n" + this.pendingNotesTranscript
-                        : "");
+                if (!this.closed) {
+                    this.pendingNotesTranscript =
+                        batch + (this.pendingNotesTranscript.length > 0
+                            ? "\n\n" + this.pendingNotesTranscript
+                            : "");
+                }
             } finally {
                 this.notesUpdateInFlight = false;
                 this.notesUpdatePromise = null;
@@ -530,15 +590,19 @@ export class NotesHandler implements TranscriptionHandler {
                 // flush + finalisation, and Close must not schedule after the
                 // socket is gone. (maybeScheduleNotesUpdate also early-returns
                 // on isStopping; this makes the boundary obvious at the call site.)
-                if (!this.isStopping) {
+                if (!this.closed && !this.isStopping) {
                     this.maybeScheduleNotesUpdate();
                 }
             }
         })();
     }
 
+    private queueLoad(): number {
+        return this.queue.size + this.queue.pending;
+    }
+
     private send(msg: object): void {
-        if (this.socket.readyState === this.socket.OPEN) {
+        if (!this.closed && this.socket.readyState === this.socket.OPEN) {
             this.socket.send(JSON.stringify(msg));
         }
     }

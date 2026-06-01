@@ -6,6 +6,7 @@ import { TranscriptionHandler, StartPayload, InboundMessage } from "./types.js";
 import { FormFillHandler } from "./handlers/FormFillHandler.js";
 import { NotesHandler } from "./handlers/NotesHandler.js";
 import { verifyWSToken } from "./ws-token.js";
+import { safeErrorInfo } from "./safe-log.js";
 
 const wss = new WebSocketServer({ port: 5551 });
 console.log(`[app] WebSocket server listening on ws://0.0.0.0:5551`);
@@ -29,7 +30,7 @@ wss.on("connection", (socket: WebSocket, req) => {
     if (ALLOWED_ORIGIN) {
         const origin = req.headers.origin ?? "";
         if (origin !== ALLOWED_ORIGIN) {
-            console.warn(`[${sessionId}] Rejected origin: ${origin}`);
+            console.warn(`[${sessionId}] Rejected origin — present: ${origin.length > 0}, chars: ${origin.length}`);
             socket.close(1008, "Origin not allowed");
             return;
         }
@@ -87,7 +88,8 @@ wss.on("connection", (socket: WebSocket, req) => {
             const startMsg = msg as StartPayload & { token?: string };
             const authStart = Date.now();
 
-            console.log(`[${sessionId}] start received — mode: ${startMsg.mode}`);
+            const safeMode = startMsg.mode === "forms" || startMsg.mode === "notes" ? startMsg.mode : "unknown";
+            console.log(`[${sessionId}] start received — mode: ${safeMode}`);
 
             if (!startMsg.token) {
                 socket.send(JSON.stringify({
@@ -103,7 +105,7 @@ wss.on("connection", (socket: WebSocket, req) => {
             try {
                 tokenPayload = verifyWSToken(startMsg.token);
             } catch (err) {
-                console.warn(`[${sessionId}] Token invalid:`, err instanceof Error ? err.message : err);
+                console.warn(`[${sessionId}] Token invalid — ${safeErrorInfo(err)}`);
                 socket.send(JSON.stringify({
                     type: "error",
                     code: "invalid-token",
@@ -127,7 +129,7 @@ wss.on("connection", (socket: WebSocket, req) => {
             clearTimeout(authTimeout);
 
             const authMs = Date.now() - authStart;
-            console.log(`[${sessionId}] Auth OK — userId: ${tokenPayload.userId}, mode: ${startMsg.mode}, auth: ${authMs}ms`);
+            console.log(`[${sessionId}] Auth OK — mode: ${startMsg.mode}, auth: ${authMs}ms`);
 
             if (handler) {
                 handler.onClose();
@@ -153,7 +155,8 @@ wss.on("connection", (socket: WebSocket, req) => {
             try {
                 await handler.onStart(startMsg);
             } catch (err) {
-                console.error(`[${sessionId}] Handler onStart error:`, err);
+                console.error(`[${sessionId}] Handler onStart error — ${safeErrorInfo(err)}`);
+                handler.onClose();
                 socket.send(JSON.stringify({ type: "error", code: "bad-start-payload" }));
                 handler = null;
             }
@@ -170,7 +173,7 @@ wss.on("connection", (socket: WebSocket, req) => {
             try {
                 await handler.onStop();
             } catch (err) {
-                console.error(`[${sessionId}] Handler onStop error:`, err);
+                console.error(`[${sessionId}] Handler onStop error — ${safeErrorInfo(err)}`);
                 socket.send(JSON.stringify({ type: "error", code: "stop-failed" }));
             }
             return;
@@ -186,7 +189,7 @@ wss.on("connection", (socket: WebSocket, req) => {
     socket.on("close", (code, reason) => {
         clearTimeout(authTimeout);
         const lifetimeMs = Date.now() - connectedAt;
-        console.log(`[${sessionId}] Closed — code: ${code}, lifetime: ${lifetimeMs}ms, reason: ${reason.toString() || "(none)"}`);
+        console.log(`[${sessionId}] Closed — code: ${code}, lifetime: ${lifetimeMs}ms, hasReason: ${reason.length > 0}, reasonChars: ${reason.length}`);
         if (handler) {
             handler.onClose();
             handler = null;
@@ -195,7 +198,7 @@ wss.on("connection", (socket: WebSocket, req) => {
 
     socket.on("error", (err) => {
         clearTimeout(authTimeout);
-        console.error(`[${sessionId}] Socket error:`, err.message);
+        console.error(`[${sessionId}] Socket error — ${safeErrorInfo(err)}`);
         if (handler) {
             handler.onClose();
             handler = null;

@@ -8,9 +8,12 @@ export const MAX_CACHE_ENTRIES = 500;
 // At 2s recorder intervals, 6 chunks = ~12s of audio before first update.
 // Previously 12 chunks at 3s = ~36s — too long for meaningful real-time feel.
 export const MIN_CHUNK_NUM = 10;
-export const MIN_WORD_COUNT = 5;
+export const NOTES_MIN_WORD_COUNT = 5;
+export const FORMS_MIN_TRANSCRIPT_CHARS = 1;
 export const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
 export const MAX_NOTES_SESSION_MS = 120 * 60_000; // 120 minutes hard safety cap
+export const MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS = 4;
+export const MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS = 6;
 
 // NOTES_CHUNK_PHASES (T-012d): Notes-only early audio batching. At ~2s recorder
 // chunks, smaller early batches make revised transcript (and therefore notes

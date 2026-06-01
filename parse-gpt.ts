@@ -1,22 +1,24 @@
-import { FieldDef } from "./types.js";
+import { type FieldDef, FORMS_MIN_TRANSCRIPT_CHARS } from "./types.js";
 import { get_encoding } from "@dqbd/tiktoken";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
+import { safeErrorInfo } from "./safe-log.js";
 dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
 const GPT_FULL_MODEL = "gpt-5.5";
 const GPT_REASONING_EFFORT = "low" as const;
+const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
 // Forms extract discrete fields, so keep a conservative final transcript window.
 const FORM_FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
 // T-005 (Phase 1): Notes summarise whole sessions, so the final pass needs to see
 // the entire revised transcript. The 120-minute session cap (MAX_NOTES_SESSION_MS)
-// bounds a single session's dense-speech transcript to roughly ~110k chars, so this
+// bounds a single session's dense-speech transcript to roughly ~70k chars, so this
 // window is sized to cover a full capped session without dropping the middle.
 // Sessions that approach the cap still log `truncated: true`; if the cap is ever
 // raised/removed, switch to rolling checkpoint digests (T-005 Phase 2 / Option B).
-const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 130000;
+const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 80000;
 // Final notes are roughly the size of the notes document, not the transcript, so
 // cap the requested output regardless of how large the input transcript grows.
 const NOTES_FINAL_MAX_OUTPUT_TOKENS = 16000;
@@ -219,6 +221,11 @@ function allowedKeySet(template: FieldDef[]): string[] {
     return template.map((f) => normalizeKey(f.field_name));
 }
 
+function isMeaningfulFormText(text: string): boolean {
+    const trimmed = text.trim();
+    return trimmed.length >= FORMS_MIN_TRANSCRIPT_CHARS && /[A-Za-z0-9$]/.test(trimmed);
+}
+
 function filterAndNormalizeOutput(
     raw: Record<string, string>,
     allowed: Set<string>,
@@ -228,7 +235,10 @@ function filterAndNormalizeOutput(
     for (const [rawKey, val] of Object.entries(raw)) {
         const key = normalizeKey(rawKey);
         if (!allowed.has(key)) {
-            console.warn(`[${context}] Dropping unknown key "${rawKey}" (normalized: "${key}")`);
+            console.warn(
+                `[${context}] Dropping unknown key — ` +
+                `rawKeyChars: ${rawKey.length}, normalizedKeyChars: ${key.length}`
+            );
             continue;
         }
         if (val && val !== "N/A" && val.trim() !== "") {
@@ -243,31 +253,41 @@ function filterAndNormalizeOutput(
 export async function reviseTranscription(rawText: string): Promise<string> {
     if (rawText.trim().length < 15) return rawText;
 
+    const reviseStart = Date.now();
     const inputTokens = countTokens(rawText);
     const maxOutputTokens = Math.max(256, Math.ceil(inputTokens * 1.3));
 
-    const completion = await openai.chat.completions.create({
-        model: GPT_MINI_MODEL,
-        messages: [
-            { role: "system", content: REVISE_SYS_TXT },
-            { role: "user", content: rawText },
-        ],
-        max_completion_tokens: maxOutputTokens,
-        response_format: { type: "json_object" },
-        reasoning_effort: GPT_REASONING_EFFORT,
-    });
-
-    const content = completion.choices?.[0]?.message?.content;
-    if (!content) { console.warn("[revise] Empty response, using original"); return rawText; }
-
     try {
+        const completion = await openai.chat.completions.create({
+            model: GPT_MINI_MODEL,
+            messages: [
+                { role: "system", content: REVISE_SYS_TXT },
+                { role: "user", content: rawText },
+            ],
+            max_completion_tokens: maxOutputTokens,
+            response_format: { type: "json_object" },
+            reasoning_effort: GPT_REASONING_EFFORT,
+        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) {
+            console.warn(`[revise] Empty response, using original — inputChars: ${rawText.length}, duration: ${Date.now() - reviseStart}ms`);
+            return rawText;
+        }
+
         const parsed = JSON.parse(content) as { correctedText?: string };
         const revised = parsed.correctedText?.trim();
-        if (!revised) { console.warn("[revise] Missing correctedText key, using original"); return rawText; }
+        if (!revised) {
+            console.warn(`[revise] Missing correctedText key, using original — inputChars: ${rawText.length}, duration: ${Date.now() - reviseStart}ms`);
+            return rawText;
+        }
         console.log(`[revise] ${rawText.length} → ${revised.length} chars`);
         return revised;
-    } catch {
-        console.warn("[revise] JSON parse failed, using original");
+    } catch (err) {
+        console.warn(
+            `[revise] Failed open, using original — ` +
+            `inputChars: ${rawText.length}, duration: ${Date.now() - reviseStart}ms, error: ${safeErrorInfo(err)}`
+        );
         return rawText;
     }
 }
@@ -277,7 +297,7 @@ export async function extractAttributesFromText(
     template: FieldDef[],
     currAttributes: Record<string, string>
 ): Promise<Record<string, string>> {
-    if (correctedText.trim().length < 20 || template.length === 0) return {};
+    if (!isMeaningfulFormText(correctedText) || template.length === 0) return {};
 
     const allowed = allowedKeySet(template);
     const allowedSet = new Set(allowed);
@@ -289,35 +309,35 @@ export async function extractAttributesFromText(
 
     const maxOutputTokens = Math.max(512, template.length * 60);
 
-    const completion = await openai.chat.completions.create({
-        model: GPT_MINI_MODEL,
-        messages: [
-            { role: "system", content: EXTRACT_SYS_TXT },
-            {
-                role: "user",
-                content: JSON.stringify({
-                    allowed_keys: allowed,
-                    current_values: normalizedCurrent,
-                    transcript_segment: correctedText,
-                }),
-            },
-        ],
-        max_completion_tokens: maxOutputTokens,
-        response_format: { type: "json_object" },
-        reasoning_effort: GPT_REASONING_EFFORT,
-    });
-
-    const content = completion.choices?.[0]?.message?.content;
-    if (!content) { console.warn("[extract] Empty response"); return {}; }
-
     try {
+        const completion = await openai.chat.completions.create({
+            model: GPT_MINI_MODEL,
+            messages: [
+                { role: "system", content: EXTRACT_SYS_TXT },
+                {
+                    role: "user",
+                    content: JSON.stringify({
+                        allowed_keys: allowed,
+                        current_values: normalizedCurrent,
+                        transcript_segment: correctedText,
+                    }),
+                },
+            ],
+            max_completion_tokens: maxOutputTokens,
+            response_format: { type: "json_object" },
+            reasoning_effort: GPT_REASONING_EFFORT,
+        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+
+        const content = completion.choices?.[0]?.message?.content;
+        if (!content) { console.warn("[extract] Empty response"); return {}; }
+
         const parsed = JSON.parse(content) as { parsedAttributes?: Record<string, string> };
         const raw = parsed.parsedAttributes ?? {};
         const cleaned = filterAndNormalizeOutput(raw, allowedSet, "extract");
         console.log(`[extract] Got ${Object.keys(cleaned).length}/${template.length} fields`);
         return cleaned;
     } catch (err) {
-        console.warn("[extract] JSON parse failed:", err);
+        console.warn(`[extract] Failed, returning sparse empty result — error: ${safeErrorInfo(err)}`);
         return {};
     }
 }
@@ -327,8 +347,8 @@ export async function parseFinalAttributes(
     template: FieldDef[],
     candidateAttributes: Record<string, string>
 ): Promise<Record<string, string>> {
-    if (fullTranscript.trim().length < 30) {
-        console.log("[final] Transcript too short, returning candidates as-is");
+    if (!isMeaningfulFormText(fullTranscript)) {
+        console.log("[final] Transcript empty/noise, returning candidates as-is");
         return candidateAttributes;
     }
 
@@ -360,7 +380,7 @@ export async function parseFinalAttributes(
             response_format: { type: "json_object" },
             reasoning_effort: GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
-        });
+        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
         if (!content) { console.warn("[final] Empty response, returning candidates"); return candidateAttributes; }
@@ -373,7 +393,7 @@ export async function parseFinalAttributes(
         for (const [rawKey, value] of Object.entries(raw)) {
             const key = normalizeKey(rawKey);
             if (!allowedSet.has(key)) {
-                console.warn(`[final] Dropping unknown key "${rawKey}"`);
+                console.warn(`[final] Dropping unknown key — rawKeyChars: ${rawKey.length}, normalizedKeyChars: ${key.length}`);
                 continue;
             }
             if (value && value !== "N/A" && value.trim() !== "") {
@@ -384,7 +404,7 @@ export async function parseFinalAttributes(
         console.log(`[final] ${GPT_FULL_MODEL} pass complete. Updated ${updatedCount} fields.`);
         return merged;
     } catch (err) {
-        console.error("[final] Error:", err);
+        console.error(`[final] Error — ${safeErrorInfo(err)}`);
         return candidateAttributes;
     }
 }
@@ -425,7 +445,7 @@ export async function generateNotesIncremental(
         max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
         reasoning_effort: GPT_REASONING_EFFORT,
-    });
+    }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
     const content = completion.choices?.[0]?.message?.content;
     if (!content) {
@@ -503,7 +523,7 @@ export async function finalizeNotes(
             response_format: { type: "json_object" },
             reasoning_effort: GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
-        });
+        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
         if (!content) {
@@ -520,7 +540,7 @@ export async function finalizeNotes(
         console.log(`[notes-final] ${GPT_FULL_MODEL} pass complete: ${finalized.length} chars`);
         return finalized;
     } catch (err) {
-        console.error("[notes-final] Error:", err);
+        console.error(`[notes-final] Error — ${safeErrorInfo(err)}`);
         return currentNotes;
     }
 }
