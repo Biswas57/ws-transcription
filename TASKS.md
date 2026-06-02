@@ -20,6 +20,9 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-014 Notes VAD optimisation | Completed | Skip no-speech batches before Whisper via Silero VAD (ffmpeg-static decode) behind `transcribeAudioBatch`; `VAD_MODE` off/dry-run/gate, fails open, notes gated, forms ungated. |
 | T-015 Forms recording observability | Completed | Added content-safe forms-mode timing/observability logging (counts and timings only). |
 | T-016 Harden revision fallback and backend session stability | Completed | Forms preserves short values; Forms/Notes suppress stale async sends; Forms stop is idempotent; late audio is ignored after stop; per-session queue caps send `transcription-overloaded`; revision fails open to raw Whisper text; runtime logs use safe metadata only; Notes start payload is sanitised; Whisper/GPT calls have request timeouts. |
+| T-159 Reduce Notes incremental rewrite cost | Completed | Live notes now use append-only patch JSON applied by the backend to canonical markdown, avoiding repeated full-document live rewrites and bounding live patch output by transcript size rather than current notes length. |
+| T-160 Split Notes live-update and final-formatting prompts | Completed | Live prompt now requests small append-only patch instructions; final prompt remains the full-document polish/dedupe/restructure pass and may return shorter final notes when meaning is preserved. |
+| T-164 Preserve Notes continuation canonical markdown | Completed | Notes continuation now stores the supplied `currentNotesMarkdown` as full canonical markdown instead of truncating it to 20k chars; final notes may still compact, dedupe, and summarise during `notes_final`. |
 
 ## Active
 
@@ -37,3 +40,5 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-017 Long-session memory / rolling synthesis (Phase 2, Option B) | Backlog | Seal older raw transcript into compact rolling checkpoint digests so memory and final-pass cost stay bounded even if the 120-minute cap is raised/removed; final pass consumes notes + digests + recent raw tail. Only needed beyond the cap; backend-only, no WS protocol change. |
 | T-019 Summarise notes backend support | Backlog | Depends on T-007. Use current visible/edited `notesMarkdown` only; no audio, transcript, or DB save. Return `summaryMarkdown`. |
 | T-020 Reorganise notes backend support | Backlog | Depends on T-007. Use current visible/edited `notesMarkdown` plus target sections; no full transcript in v1. Return `reorganisedMarkdown`. |
+| T-162 Align Notes backend cap to 60 minutes | Backlog | Backend half of T-162. Update and enforce backend Notes cap behaviour to match frontend warning UI. Frame as reliability/cost-safety only, not monetisation. |
+| T-165 Add safe active session observability | Backlog | Add safe metadata observability for active Notes sessions, continuation/truncation, finalisation, and session closure. Do not log raw transcript, audio, full generated notes, secrets, or PII. |
