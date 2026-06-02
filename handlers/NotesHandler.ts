@@ -53,25 +53,6 @@ function getNotesPhase(elapsedMs: number): NotesUpdatePhase {
     return                               { name: "extended", maxWaitMs: 120_000, minPendingChars: 1200 };
 }
 
-const MAX_CONTINUATION_NOTES_CHARS = 20000;
-const CONTINUATION_OMISSION_MARKER = "\n\n[... middle of previous notes omitted due to continuation size limit ...]\n\n";
-
-function normalizeContinuationNotes(markdown: string): { markdown: string; truncated: boolean } {
-    const trimmed = markdown.trim();
-    if (trimmed.length <= MAX_CONTINUATION_NOTES_CHARS) {
-        return { markdown: trimmed, truncated: false };
-    }
-
-    // Preserve the start for structure/headings and the end for recent manual edits.
-    const availableChars = MAX_CONTINUATION_NOTES_CHARS - CONTINUATION_OMISSION_MARKER.length;
-    const headChars = Math.ceil(availableChars / 2);
-    const tailChars = Math.floor(availableChars / 2);
-    return {
-        markdown: `${trimmed.slice(0, headChars)}${CONTINUATION_OMISSION_MARKER}${trimmed.slice(-tailChars)}`,
-        truncated: true,
-    };
-}
-
 function countWords(text: string): number {
     const trimmed = text.trim();
     return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
@@ -136,10 +117,10 @@ export class NotesHandler implements TranscriptionHandler {
             : [];
         const continuationRequested = payload.continuation === true;
         const providedNotesChars = typeof payload.currentNotesMarkdown === "string" ? payload.currentNotesMarkdown.length : 0;
-        const continuation = continuationRequested && typeof payload.currentNotesMarkdown === "string"
-            ? normalizeContinuationNotes(payload.currentNotesMarkdown)
-            : { markdown: "", truncated: false };
-        this.st.currentMarkdown = continuation.markdown;
+        const continuationMarkdown = continuationRequested && typeof payload.currentNotesMarkdown === "string"
+            ? payload.currentNotesMarkdown.trim()
+            : "";
+        this.st.currentMarkdown = continuationMarkdown;
         this.passCount = 0;
         this.sessionStartedAt = Date.now();
         // Seed lastNotesUpdateAt to session start so the AND-logic time gate
@@ -163,7 +144,8 @@ export class NotesHandler implements TranscriptionHandler {
             `continuation: ${continuationRequested}, ` +
             `providedNotesChars: ${providedNotesChars}, ` +
             `seededNotesChars: ${this.st.currentMarkdown.length}, ` +
-            `truncated: ${continuation.truncated}`
+            `canonicalNotesChars: ${this.st.currentMarkdown.length}, ` +
+            `truncatedForCanonical: false`
         );
 
         this.send({ type: "started", mode: "notes" });
