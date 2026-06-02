@@ -14,11 +14,11 @@ const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_
 // Forms extract discrete fields, so keep a conservative final transcript window.
 const FORM_FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
 // T-005 (Phase 1): Notes summarise whole sessions, so the final pass needs to see
-// the entire revised transcript. The 120-minute session cap (MAX_NOTES_SESSION_MS)
-// bounds a single session's dense-speech transcript to roughly ~70k chars, so this
-// window is sized to cover a full capped session without dropping the middle.
+// the entire revised transcript. The 60-minute session cap (MAX_NOTES_SESSION_MS)
+// bounds a single backend recording session; this window remains intentionally
+// generous while rolling checkpoint digests (T-005 Phase 2 / Option B) are deferred.
 // Sessions that approach the cap still log `truncated: true`; if the cap is ever
-// raised/removed, switch to rolling checkpoint digests (T-005 Phase 2 / Option B).
+// raised/removed, switch to rolling checkpoint digests.
 const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 80000;
 // Final notes are roughly the size of the notes document, not the transcript, so
 // cap the requested output regardless of how large the input transcript grows.
@@ -284,8 +284,8 @@ function countTokens(text: string): number {
 }
 
 // Preserves the beginning and end for final passes, but may drop middle content.
-// With the T-005 Phase 1 window this only triggers for sessions near the 120-min
-// cap; rolling checkpoint digests (T-005 Phase 2 / Option B) would remove the drop.
+// With the T-005 Phase 1 window this should only trigger for unusually dense
+// capped sessions; rolling checkpoint digests would remove the drop.
 function truncateTranscriptPreservingEdges(text: string, maxChars: number): string {
     if (text.length <= maxChars) return text;
     const half = Math.floor(maxChars / 2);
