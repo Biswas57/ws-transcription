@@ -20,7 +20,8 @@ import {
     transcribeAudioBatch,
     appendWithOverlap,
 } from "../transcription.js";
-import { reviseTranscription, generateNotesIncremental, finalizeNotes } from "../parse-gpt.js";
+import { reviseTranscription, generateNotesIncrementalPatch, finalizeNotes } from "../parse-gpt.js";
+import { applyNotesLivePatch } from "../notes-live-patch.js";
 import { safeErrorInfo } from "../safe-log.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
@@ -28,7 +29,7 @@ import { safeErrorInfo } from "../safe-log.js";
 // Notes updates use a time-and-chars based cadence so that:
 //   - Early in a session updates feel real-time (every ~7.5s once enough text lands)
 //   - Long sessions taper off to avoid stacking full-document rewrites
-//   - At most one generateNotesIncremental runs at a time per session (one-in-flight)
+//   - At most one live patch generation runs at a time per session (one-in-flight)
 //
 // Both conditions must hold (AND logic) before an update fires:
 //   - enough wall-clock time has elapsed since the last update
@@ -66,8 +67,8 @@ export class NotesHandler implements TranscriptionHandler {
 
     // ── Adaptive scheduler state ──────────────────────────────────────────────
     // pendingNotesTranscript: revised transcript segments waiting for the next
-    //   scheduled generateNotesIncremental call (newline-separated, never logged).
-    // notesUpdateInFlight: true while a generateNotesIncremental is running —
+    //   scheduled live patch call (newline-separated, never logged).
+    // notesUpdateInFlight: true while a live patch generation is running —
     //   prevents a second call from starting until the first completes.
     // notesUpdatePromise: the in-flight promise, stored so onStop (T-012c) can
     //   await it before flushing pending transcript and running finalizeNotes.
@@ -255,7 +256,7 @@ export class NotesHandler implements TranscriptionHandler {
                 [st.transcript, st.currTranscriptSize] = appendWithOverlap(st.transcript, revised);
 
                 // Stage 3: Buffer revised transcript for the adaptive scheduler.
-                // generateNotesIncremental is no longer called per-pass — the
+                // Live patch generation is no longer called per-pass — the
                 // scheduler (maybeScheduleNotesUpdate) decides when to fire it
                 // based on elapsed session time and accumulated pending chars.
                 this.pendingNotesTranscript +=
@@ -373,25 +374,35 @@ export class NotesHandler implements TranscriptionHandler {
             );
 
             try {
-                const updated = await generateNotesIncremental(
+                const patch = await generateNotesIncrementalPatch(
                     pendingBatch,
                     st.currentMarkdown,
                     st.noteStyle,
                     st.sections,
                 );
                 if (this.closed) return;
-                st.currentMarkdown = updated;
-                this.send({ type: "notes_update", notesMarkdown: updated });
-                console.log(
-                    `[${this.sessionId}][notes] Stop flush done — ` +
-                    `duration: ${Date.now() - flushStart}ms, ` +
-                    `outputChars: ${updated.length}`
-                );
+                if (patch.parseFailed) {
+                    this.restorePendingNotesBatch(pendingBatch);
+                    console.warn(
+                        `[${this.sessionId}][notes] Stop flush patch parse failed — ` +
+                        `pending transcript preserved, continuing finalisation`
+                    );
+                } else {
+                    const updated = applyNotesLivePatch(st.currentMarkdown, patch);
+                    st.currentMarkdown = updated;
+                    this.send({ type: "notes_update", notesMarkdown: updated });
+                    console.log(
+                        `[${this.sessionId}][notes] Stop flush done — ` +
+                        `duration: ${Date.now() - flushStart}ms, ` +
+                        `outputChars: ${updated.length}`
+                    );
+                }
             } catch (e) {
                 console.error(
                     `[${this.sessionId}][notes] Stop flush failed after ` +
                     `${Date.now() - flushStart}ms — ${safeErrorInfo(e)}`
                 );
+                if (!this.closed) this.restorePendingNotesBatch(pendingBatch);
             }
         }
 
@@ -533,13 +544,22 @@ export class NotesHandler implements TranscriptionHandler {
 
         this.notesUpdatePromise = (async () => {
             try {
-                const updated = await generateNotesIncremental(
+                const patch = await generateNotesIncrementalPatch(
                     batch,
                     this.st.currentMarkdown,
                     this.st.noteStyle,
                     this.st.sections,
                 );
                 if (this.closed) return;
+                if (patch.parseFailed) {
+                    this.restorePendingNotesBatch(batch);
+                    console.warn(
+                        `[${this.sessionId}][notes] Scheduled update patch parse failed — ` +
+                        `pending transcript preserved`
+                    );
+                    return;
+                }
+                const updated = applyNotesLivePatch(this.st.currentMarkdown, patch);
                 this.st.currentMarkdown = updated;
                 this.lastNotesUpdateAt = Date.now();
                 console.log(
@@ -553,15 +573,7 @@ export class NotesHandler implements TranscriptionHandler {
                     `[${this.sessionId}][notes] Scheduled update failed after ` +
                     `${Date.now() - updateStart}ms — ${safeErrorInfo(e)}`
                 );
-                // Restore batch so content isn't silently dropped.
-                // Prepend so existing pending (from jobs that ran during the
-                // failed update) stays in correct chronological order.
-                if (!this.closed) {
-                    this.pendingNotesTranscript =
-                        batch + (this.pendingNotesTranscript.length > 0
-                            ? "\n\n" + this.pendingNotesTranscript
-                            : "");
-                }
+                if (!this.closed) this.restorePendingNotesBatch(batch);
             } finally {
                 this.notesUpdateInFlight = false;
                 this.notesUpdatePromise = null;
@@ -577,6 +589,16 @@ export class NotesHandler implements TranscriptionHandler {
                 }
             }
         })();
+    }
+
+    private restorePendingNotesBatch(batch: string): void {
+        if (batch.trim().length === 0) return;
+        // Prepend so existing pending from work completed during the failed
+        // update stays in chronological order.
+        this.pendingNotesTranscript =
+            batch + (this.pendingNotesTranscript.length > 0
+                ? "\n\n" + this.pendingNotesTranscript
+                : "");
     }
 
     private queueLoad(): number {

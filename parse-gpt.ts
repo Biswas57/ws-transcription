@@ -3,6 +3,7 @@ import { get_encoding } from "@dqbd/tiktoken";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { safeErrorInfo } from "./safe-log.js";
+import { applyNotesLivePatch, type NotesLivePatch } from "./notes-live-patch.js";
 dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -113,42 +114,89 @@ Return ONLY a pure JSON object: {"finalAttributes": {"snake_case_key": "value", 
 Every key in allowed_keys must appear. No markdown, no code fences, no extra keys.`;
 
 const NOTES_INCREMENTAL_SYS_TXT = `\
-You are a live note-taking scribe in an Australian professional context \
-(clinical, meetings, social work, HR).
+You are a live note-taking scribe in an Australian professional context
+(clinical, meetings, social work, HR, technical support, process training, study, and general notes).
 
 You are given:
-1. note_style - the style/context of notes (clinical, meeting, study, general)
-2. sections - optional section headings to organise notes under (may be empty)
-3. current_notes - the notes accumulated so far (may be empty on first chunk)
-4. transcript_segment - a new revised transcript segment to incorporate
+1. note_style - the style/context of notes (clinical, meeting, study, general, or similar)
+2. sections - optional preferred section headings to organise notes under (may be empty)
+3. current_notes - the full canonical notes accumulated so far, including prior recording segments and possible user edits
+4. transcript_segment - the latest revised transcript segment to incorporate
 
 YOUR TASK:
-- Update current_notes with the new transcript_segment.
-- current_notes may include prior notes and user edits from earlier recording segments; preserve them unless the new transcript clearly corrects or expands them.
-- Capture new facts, decisions, actions, process steps, caveats, and important details.
+Read current_notes for context and read transcript_segment for new information.
+Return small append-only updates for information from transcript_segment that is missing from current_notes.
+
+CRITICAL LIVE-UPDATE RULES:
+- Return append instructions only.
+- Do not return the full notes document.
+- Do not include existing notes inside appendMarkdown.
+- Do not rewrite existing notes.
+- Do not delete, replace, reorder, dedupe, summarise, or reformat existing notes.
 - Do not produce a transcript.
-- Do not duplicate information already captured.
-- If new information expands an existing point, merge it into the relevant existing bullet or section.
-- Do not remove existing content unless correcting an obvious transcription error, duplicate, or broken heading.
-- If sections are provided, use them as stable top-level ## headings.
-- If sections are empty, infer clear professional headings.
-- Use ### subheadings for component-specific or topic-specific material where helpful.
-- Never create broken or partial headings from transcript fragments.
-- Normalise obvious fragmented headings.
-  Example: use "Disk / SSD / HDD - Information to capture and perform", not separate headings like "Disk (HDD" and "SSD)".
-- Preserve technical acronyms and names exactly where possible.
-- If a term is uncertain, keep it as uncertain rather than inventing a correction.
-- Use clear professional markdown: ## headings, ### subheadings, - bullets, **bold** for key facts.
-- Be concise but not lossy.
+- Do not polish the whole document.
+- Do not create large paragraphs when concise bullets will do.
+- If there is no meaningful new information, return exactly {"updates":[]}.
 
-Style guidance:
-- clinical: professional clinical note style.
-- meeting: decisions, actions, owners, blockers.
-- study: concepts, definitions, process steps, examples.
-- general: clear structured notes.
+WHAT TO CAPTURE:
+- New facts, decisions, actions, owners, blockers, process steps, examples, caveats, dates/times, requirements, and important details.
+- New questions, uncertainties, risks, or items needing verification.
+- Corrections or clarifications to earlier notes, but append them as corrections/clarifications rather than editing old content.
+- Technical acronyms, product names, case names, cluster identifiers, IDs, workflow names, and proper nouns exactly where possible.
+- If a term is uncertain, keep it uncertain rather than inventing a correction.
 
-Return ONLY valid JSON: {"notesMarkdown": "<full updated notes as a markdown string>"}
-No markdown fences, no extra keys.`;
+DUPLICATE CONTROL:
+- Only append details that are not already captured in current_notes.
+- If transcript_segment repeats something already present, omit it.
+- If transcript_segment expands an existing point with a genuinely new detail, append only the new detail.
+- Duplicates may still happen occasionally; final notes will dedupe later.
+
+TARGET HEADING RULES:
+- Prefer an existing ## or ### heading from current_notes.
+- targetHeading must be the existing heading text only, without leading ## or ###.
+- targetLevel should be 2 for ## headings and 3 for ### headings.
+- Prefer exact existing heading text.
+- If sections were provided and matching headings already exist in current_notes, prefer those stable top-level sections.
+- If no existing heading fits, use fallbackAppendMarkdown instead of inventing many new headings.
+- If current_notes is empty or has no usable headings, use fallbackAppendMarkdown.
+
+APPEND MARKDOWN RULES:
+- appendMarkdown must be a small markdown fragment, not a full document.
+- Use - bullets for most live notes.
+- Use nested bullets with two leading spaces when useful.
+- Use ### subheadings only when they make the appended content clearer.
+- Do not use markdown tables in live updates.
+- Avoid fenced code blocks unless transcript_segment clearly contains an exact command/log snippet that must be preserved.
+- Use **bold** sparingly for key terms only when helpful.
+- Keep appendMarkdown concise but not lossy.
+
+STYLE GUIDANCE:
+- clinical: concise professional clinical-style observations, risks, actions, and follow-up items.
+- meeting: decisions, actions, owners, blockers, dates, and unresolved questions.
+- study: concepts, definitions, process steps, examples, caveats, and checklists.
+- general: clear structured notes with useful headings and bullets.
+- technical support/process training: preserve product names, IDs, commands, tools, escalation paths, case workflow steps, and exact terminology where possible.
+
+OUTPUT FORMAT:
+Return ONLY valid JSON in this shape:
+{
+  "updates": [
+    {
+      "targetHeading": "existing heading text",
+      "targetLevel": 2,
+      "appendMarkdown": "- New detail"
+    }
+  ],
+  "fallbackAppendMarkdown": ""
+}
+
+OUTPUT CONSTRAINTS:
+- No markdown fences.
+- No commentary.
+- No extra keys.
+- Do not return {"notesMarkdown": "..."}.
+- Do not return the full notes document.
+- If there are no updates, return exactly {"updates":[]}.`;
 
 const NOTES_FINAL_SYS_TXT = `\
 You are a professional note editor in an Australian context \
@@ -224,6 +272,41 @@ function allowedKeySet(template: FieldDef[]): string[] {
 function isMeaningfulFormText(text: string): boolean {
     const trimmed = text.trim();
     return trimmed.length >= FORMS_MIN_TRANSCRIPT_CHARS && /[A-Za-z0-9$]/.test(trimmed);
+}
+
+function parseNotesLivePatchContent(content: string): NotesLivePatch {
+    try {
+        const parsed = JSON.parse(content) as {
+            updates?: unknown;
+            fallbackAppendMarkdown?: unknown;
+        };
+
+        const updates = Array.isArray(parsed.updates)
+            ? parsed.updates.flatMap((entry): NotesLivePatch["updates"] => {
+                if (!entry || typeof entry !== "object") return [];
+                const raw = entry as {
+                    targetHeading?: unknown;
+                    targetLevel?: unknown;
+                    appendMarkdown?: unknown;
+                };
+                return [{
+                    targetHeading: typeof raw.targetHeading === "string" ? raw.targetHeading : "",
+                    targetLevel: raw.targetLevel === 2 || raw.targetLevel === 3 ? raw.targetLevel : undefined,
+                    appendMarkdown: typeof raw.appendMarkdown === "string" ? raw.appendMarkdown : "",
+                }];
+            })
+            : [];
+
+        return {
+            updates,
+            fallbackAppendMarkdown: typeof parsed.fallbackAppendMarkdown === "string"
+                ? parsed.fallbackAppendMarkdown
+                : undefined,
+        };
+    } catch {
+        console.warn("[notes-incremental-patch] JSON parse failed, returning empty patch");
+        return { updates: [], parseFailed: true };
+    }
 }
 
 function filterAndNormalizeOutput(
@@ -412,21 +495,24 @@ export async function parseFinalAttributes(
 // ─── Notes exports (new) ──────────────────────────────────────────────────────
 
 /**
- * Incrementally update markdown notes with a new transcript segment.
- * Runs on the same cadence as extractAttributesFromText.
- * Uses gpt-5.4-mini for speed — this is a live/streaming operation.
+ * Generate append-only live note patch instructions.
+ * The model still receives full current notes for section choice and duplicate
+ * avoidance, but its output budget is bounded for small patch JSON.
  */
-export async function generateNotesIncremental(
+export async function generateNotesIncrementalPatch(
     transcriptSegment: string,
     currentNotes: string,
     noteStyle: string,
     sections: string[]
-): Promise<string> {
-    if (transcriptSegment.trim().length < 20) return currentNotes;
+): Promise<NotesLivePatch> {
+    if (transcriptSegment.trim().length < 20) return { updates: [] };
 
-    const inputTokens = countTokens(transcriptSegment) + countTokens(currentNotes);
-    // Notes output can be longer than input since we're accumulating
-    const maxOutputTokens = Math.max(1024, Math.ceil(inputTokens * 1.5));
+    const transcriptTokens = countTokens(transcriptSegment);
+    const inputTokens = transcriptTokens + countTokens(currentNotes);
+    const maxOutputTokens = Math.min(
+        2048,
+        Math.max(512, Math.ceil(transcriptTokens * 1.2) + 256)
+    );
 
     const completion = await openai.chat.completions.create({
         model: GPT_MINI_MODEL,
@@ -449,23 +535,41 @@ export async function generateNotesIncremental(
 
     const content = completion.choices?.[0]?.message?.content;
     if (!content) {
-        console.warn("[notes-incremental] Empty response, keeping current notes");
-        return currentNotes;
+        console.warn("[notes-incremental-patch] Empty response, returning empty patch");
+        return { updates: [] };
     }
 
-    try {
-        const parsed = JSON.parse(content) as { notesMarkdown?: string };
-        const updated = parsed.notesMarkdown?.trim();
-        if (!updated) {
-            console.warn("[notes-incremental] Missing notesMarkdown key, keeping current");
-            return currentNotes;
-        }
-        console.log(`[notes-incremental] Notes updated: ${currentNotes.length} → ${updated.length} chars`);
-        return updated;
-    } catch {
-        console.warn("[notes-incremental] JSON parse failed, keeping current notes");
-        return currentNotes;
-    }
+    const patch = parseNotesLivePatchContent(content);
+    console.log(
+        `[notes-incremental-patch] Patch received — ` +
+        `updates: ${patch.updates.length}, ` +
+        `fallbackChars: ${patch.fallbackAppendMarkdown?.length ?? 0}, ` +
+        `transcriptChars: ${transcriptSegment.length}, ` +
+        `currentNotesChars: ${currentNotes.length}, ` +
+        `inputTokens: ${inputTokens}, ` +
+        `maxOutputTokens: ${maxOutputTokens}`
+    );
+    return patch;
+}
+
+/**
+ * Incrementally update markdown notes with a new transcript segment.
+ * Runs on the same cadence as extractAttributesFromText.
+ * Uses gpt-5.4-mini for speed — this is a live/streaming operation.
+ */
+export async function generateNotesIncremental(
+    transcriptSegment: string,
+    currentNotes: string,
+    noteStyle: string,
+    sections: string[]
+): Promise<string> {
+    const patch = await generateNotesIncrementalPatch(
+        transcriptSegment,
+        currentNotes,
+        noteStyle,
+        sections
+    );
+    return applyNotesLivePatch(currentNotes, patch);
 }
 
 /**
