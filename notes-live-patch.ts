@@ -126,22 +126,74 @@ function appendUnderFallback(markdown: string, appendMarkdown: string): string {
 function insertAppendLines(lines: string[], insertionIndex: number, appendMarkdown: string): void {
     const appendLines = appendMarkdown.split(/\r?\n/);
     const insertLines: string[] = [];
+    const previousLine = findPreviousNonBlankLine(lines, insertionIndex);
+    const nextLine = findNextNonBlankLine(lines, insertionIndex);
+    const firstAppendLine = appendLines.find((line) => line.trim() !== "") ?? "";
+    const lastAppendLine = [...appendLines].reverse().find((line) => line.trim() !== "") ?? "";
+    const compactBefore = previousLine && areBothBulletLines(previousLine, firstAppendLine);
+    const compactAfter = nextLine && areBothBulletLines(lastAppendLine, nextLine);
+    const startIndex = findInsertionStart(lines, insertionIndex);
+    const endIndex = findInsertionEnd(lines, insertionIndex);
 
-    if (insertionIndex > 0 && lines[insertionIndex - 1]?.trim() !== "") {
+    if (
+        previousLine &&
+        !compactBefore
+    ) {
         insertLines.push("");
     }
 
     insertLines.push(...appendLines);
 
-    if (insertionIndex < lines.length && lines[insertionIndex]?.trim() !== "") {
+    if (
+        nextLine &&
+        !compactAfter
+    ) {
         insertLines.push("");
     }
 
-    lines.splice(insertionIndex, 0, ...insertLines);
+    lines.splice(startIndex, endIndex - startIndex, ...insertLines);
 }
 
 function normalizeAppendMarkdown(markdown: string): string {
-    return markdown.trim();
+    return markdown.trim().replace(/(?:\r?\n\s*){3,}/g, "\n\n");
+}
+
+function findPreviousNonBlankLine(lines: string[], insertionIndex: number): string {
+    for (let index = insertionIndex - 1; index >= 0; index--) {
+        if (lines[index].trim() !== "") return lines[index];
+    }
+    return "";
+}
+
+function findNextNonBlankLine(lines: string[], insertionIndex: number): string {
+    for (let index = insertionIndex; index < lines.length; index++) {
+        if (lines[index].trim() !== "") return lines[index];
+    }
+    return "";
+}
+
+function findInsertionStart(lines: string[], insertionIndex: number): number {
+    let index = insertionIndex;
+    while (index > 0 && lines[index - 1]?.trim() === "") {
+        index--;
+    }
+    return index;
+}
+
+function findInsertionEnd(lines: string[], insertionIndex: number): number {
+    let index = insertionIndex;
+    while (index < lines.length && lines[index]?.trim() === "") {
+        index++;
+    }
+    return index;
+}
+
+function areBothBulletLines(left: string, right: string): boolean {
+    return isBulletLine(left) && isBulletLine(right);
+}
+
+function isBulletLine(line: string): boolean {
+    return /^\s*[-*+]\s+/.test(line);
 }
 
 function isUnsafeAppendMarkdown(markdown: string): boolean {

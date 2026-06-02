@@ -85,6 +85,55 @@ describe("notes live patch application", () => {
         expect(second).toContain("- Another uncategorised point.");
     });
 
+    it("keeps repeated bullet appends compact", () => {
+        const updated = applyNotesLivePatch("## Live updates\n\n- First update.", {
+            updates: [{
+                targetHeading: "Live updates",
+                appendMarkdown: "\n\n- Second update.\n\n\n\n- Third update.\n\n",
+            }],
+        });
+
+        expect(updated).toBe([
+            "## Live updates",
+            "",
+            "- First update.",
+            "- Second update.",
+            "",
+            "- Third update.",
+        ].join("\n"));
+    });
+
+    it("normalizes excessive blank lines before following headings", () => {
+        const current = [
+            "## Live updates",
+            "",
+            "- First update.",
+            "",
+            "",
+            "## Next section",
+            "",
+            "- Existing next item.",
+        ].join("\n");
+
+        const updated = applyNotesLivePatch(current, {
+            updates: [{
+                targetHeading: "Live updates",
+                appendMarkdown: "\n\n- Second update.\n\n",
+            }],
+        });
+
+        expect(updated).toBe([
+            "## Live updates",
+            "",
+            "- First update.",
+            "- Second update.",
+            "",
+            "## Next section",
+            "",
+            "- Existing next item.",
+        ].join("\n"));
+    });
+
     it("ignores unsafe append fragments that try to introduce top-level headings", () => {
         const current = "## Existing\n\n- Already here.";
         const updated = applyNotesLivePatch(current, {
