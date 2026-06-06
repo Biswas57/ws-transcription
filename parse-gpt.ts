@@ -10,7 +10,12 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
 const GPT_FULL_MODEL = "gpt-5.5";
 const GPT_REASONING_EFFORT = "low" as const;
+const FINAL_GPT_REASONING_EFFORT = "high" as const;
 const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
+const DEFAULT_REVISION_MIN_CHARS = 15;
+const NOTES_REVISION_MIN_CHARS = 40;
+const NOTES_REVISION_MIN_WORDS = 8;
+const FORMS_REVISION_MIN_CHARS = 25;
 // Forms extract discrete fields, so keep a conservative final transcript window.
 const FORM_FINAL_TRANSCRIPT_CHAR_LIMIT = 6000;
 // T-005 (Phase 1): Notes summarise whole sessions, so the final pass needs to see
@@ -307,6 +312,54 @@ function isMeaningfulFormText(text: string): boolean {
     return trimmed.length >= FORMS_MIN_TRANSCRIPT_CHARS && /[A-Za-z0-9$]/.test(trimmed);
 }
 
+type RevisionMode = "forms" | "notes";
+
+type RevisionOptions = {
+    mode?: RevisionMode;
+};
+
+function countWords(text: string): number {
+    const trimmed = text.trim();
+    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+}
+
+function shouldSkipRevision(rawText: string, mode?: RevisionMode): boolean {
+    const trimmed = rawText.trim();
+    if (trimmed.length === 0) return true;
+
+    if (mode === "notes") {
+        return trimmed.length < NOTES_REVISION_MIN_CHARS ||
+            countWords(trimmed) < NOTES_REVISION_MIN_WORDS;
+    }
+
+    if (mode === "forms") {
+        return trimmed.length < FORMS_REVISION_MIN_CHARS ||
+            looksLikeShortFieldValue(trimmed);
+    }
+
+    return trimmed.length < DEFAULT_REVISION_MIN_CHARS;
+}
+
+function looksLikeShortFieldValue(text: string): boolean {
+    const trimmed = text.trim();
+    const lower = trimmed.toLowerCase();
+    const wordCount = countWords(trimmed);
+
+    if (wordCount > 4 || trimmed.length > 80) return false;
+    if (/^(yes|no|yeah|yep|nope|nah|n\/?a|not applicable|none)$/i.test(trimmed)) return true;
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return true;
+    if (/^\+?[\d\s().-]{6,}$/.test(trimmed) && /\d/.test(trimmed)) return true;
+    if (/^\$?\d[\d,]*(?:\.\d+)?(?:\s*(?:dollars?|aud|usd))?$/i.test(trimmed)) return true;
+    if (/^\d{1,2}(?::\d{2})?\s*(?:am|pm)$/i.test(trimmed)) return true;
+    if (/^\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?$/.test(trimmed)) return true;
+    if (/^\d{1,2}\s+[a-z]+(?:\s+\d{2,4})?$/i.test(trimmed)) return true;
+    if (/^[\p{L}'-]+(?:\s+[\p{L}'-]+){0,2}$/u.test(trimmed)) return true;
+
+    const compact = lower.replace(/[\s,.$()+-]/g, "");
+    const digitCount = (compact.match(/\d/g) ?? []).length;
+    return compact.length > 0 && digitCount / compact.length >= 0.6;
+}
+
 function parseNotesLivePatchContent(content: string): NotesLivePatch {
     try {
         const parsed = JSON.parse(content) as {
@@ -366,12 +419,15 @@ function filterAndNormalizeOutput(
 
 // ─── Form fill exports (unchanged) ───────────────────────────────────────────
 
-export async function reviseTranscription(rawText: string): Promise<string> {
-    if (rawText.trim().length < 15) return rawText;
+export async function reviseTranscription(rawText: string, options: RevisionOptions = {}): Promise<string> {
+    if (shouldSkipRevision(rawText, options.mode)) return rawText;
 
     const reviseStart = Date.now();
     const inputTokens = countTokens(rawText);
-    const maxOutputTokens = Math.max(256, Math.ceil(inputTokens * 1.3));
+    const maxOutputTokens = Math.min(
+        512,
+        Math.max(64, Math.ceil(inputTokens * 1.3) + 32)
+    );
 
     try {
         const completion = await openai.chat.completions.create({
@@ -494,7 +550,7 @@ export async function parseFinalAttributes(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: GPT_REASONING_EFFORT,
+            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
@@ -544,7 +600,7 @@ export async function generateNotesIncrementalPatch(
     const inputTokens = transcriptTokens + countTokens(currentNotes);
     const maxOutputTokens = Math.min(
         2048,
-        Math.max(512, Math.ceil(transcriptTokens * 1.2) + 256)
+        Math.max(1024, Math.ceil(transcriptTokens * 1.2) + 512)
     );
 
     const completion = await openai.chat.completions.create({
@@ -658,7 +714,7 @@ export async function finalizeNotes(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: GPT_REASONING_EFFORT,
+            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 

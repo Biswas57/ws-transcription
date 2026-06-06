@@ -7,7 +7,7 @@ import {
     makeAudioState,
 } from "../types.js";
 import {
-    MIN_CHUNK_NUM,
+    FORMS_MIN_CHUNK_NUM,
     FORMS_MIN_TRANSCRIPT_CHARS,
     MAX_AUDIO_BUFFER_SIZE,
     MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS,
@@ -122,7 +122,7 @@ export class FormFillHandler implements TranscriptionHandler {
         st.audioBuffer = Buffer.concat([st.audioBuffer, chunk]);
         st.nchunks++;
 
-        if (st.nchunks < MIN_CHUNK_NUM) return;
+        if (st.nchunks < FORMS_MIN_CHUNK_NUM) return;
 
         if (!checkWebMIntegrity(st.audioBuffer) && st.webmHeader) {
             st.audioBuffer = Buffer.concat([st.webmHeader, st.audioBuffer]);
@@ -160,7 +160,7 @@ export class FormFillHandler implements TranscriptionHandler {
 
                 // Stage 2: Revision
                 const t1 = Date.now();
-                const revised = await reviseTranscription(transcription);
+                const revised = await reviseTranscription(transcription, { mode: "forms" });
                 if (this.closed) return;
                 const reviseMs = Date.now() - t1;
                 const revisedChars = revised.length;
@@ -263,7 +263,7 @@ export class FormFillHandler implements TranscriptionHandler {
 
             if (isMeaningfulFormTranscript(raw)) {
                 const t1 = Date.now();
-                const revised = await reviseTranscription(raw);
+                const revised = await reviseTranscription(raw, { mode: "forms" });
                 if (this.closed) return;
                 const remainingReviseMs = Date.now() - t1;
                 console.log(

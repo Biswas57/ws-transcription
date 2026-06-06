@@ -2,27 +2,23 @@ import type { WebSocket } from "ws";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-// MIN_CHUNK_NUM: minimum audio chunks before the first GPT pass fires.
-// At 2s recorder intervals, 6 chunks = ~12s of audio before first update.
-// Previously 12 chunks at 3s = ~36s — too long for meaningful real-time feel.
-export const MIN_CHUNK_NUM = 10;
+export const FORMS_MIN_CHUNK_NUM = 10;
 export const NOTES_MIN_WORD_COUNT = 5;
 export const FORMS_MIN_TRANSCRIPT_CHARS = 1;
 export const MAX_AUDIO_BUFFER_SIZE = 1024 * 1024 * 5; // 5MB limit
 export const MAX_NOTES_SESSION_MS = 60 * 60_000; // 60-minute reliability/cost-safety cap
 export const MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS = 4;
 export const MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS = 6;
+export const NOTES_DEFAULT_MIN_CHUNKS = 15;
 
-// NOTES_CHUNK_PHASES (T-012d): Notes-only early audio batching. At ~2s recorder
-// chunks, smaller early batches make revised transcript (and therefore notes
-// updates) arrive sooner, then taper toward MIN_CHUNK_NUM as the session grows.
-// Phase boundaries mirror the notes-scheduler taper (2/5/10 min). Forms mode is
-// unaffected and continues to use MIN_CHUNK_NUM. 10+ min falls back to
-// MIN_CHUNK_NUM (10) → ~20s.
+// NOTES_CHUNK_PHASES: Notes-only audio batching. At ~2s recorder chunks, the
+// first update can still arrive quickly, then batching tapers to reduce
+// Whisper/revision pressure during established sessions. Forms mode is
+// unaffected and uses FORMS_MIN_CHUNK_NUM.
 export const NOTES_CHUNK_PHASES: { untilMs: number; minChunks: number }[] = [
-    { untilMs:  2 * 60_000, minChunks: 4 }, // 0–2 min  → ~8s
-    { untilMs:  5 * 60_000, minChunks: 5 }, // 2–5 min  → ~10s
-    { untilMs: 10 * 60_000, minChunks: 8 }, // 5–10 min → ~16s
+    { untilMs: 30_000, minChunks: 4 },
+    { untilMs: 60_000, minChunks: 5 },
+    { untilMs: 5 * 60_000, minChunks: 10 },
 ];
 
 // ─── Field definition ─────────────────────────────────────────────────────────
