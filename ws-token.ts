@@ -25,6 +25,7 @@ const TTL_SECONDS = 120; // 2 minutes
 export interface WSTokenPayload {
     userId: string;
     mode: "forms" | "notes";
+    recordingSessionId?: string;
     /** issued-at — used to detect replay beyond TTL */
     iat?: number;
     exp?: number;
@@ -40,8 +41,18 @@ function getSecret(): string {
  * Mint a signed session token.
  * Call this from the tRPC router (Next.js side) only.
  */
-export function mintWSToken(userId: string, mode: "forms" | "notes"): string {
-    return jwt.sign({ userId, mode } satisfies Omit<WSTokenPayload, "iat" | "exp">, getSecret(), {
+export function mintWSToken(
+    userId: string,
+    mode: "forms" | "notes",
+    recordingSessionId?: string
+): string {
+    const payload: Omit<WSTokenPayload, "iat" | "exp"> = {
+        userId,
+        mode,
+        ...(mode === "notes" && recordingSessionId ? { recordingSessionId } : {}),
+    };
+
+    return jwt.sign(payload, getSecret(), {
         expiresIn: TTL_SECONDS,
     });
 }

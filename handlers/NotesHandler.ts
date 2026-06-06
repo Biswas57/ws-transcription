@@ -23,6 +23,7 @@ import {
 import { reviseTranscription, generateNotesIncrementalPatch, finalizeNotes } from "../parse-gpt.js";
 import { applyNotesLivePatch } from "../notes-live-patch.js";
 import { safeErrorInfo } from "../safe-log.js";
+import { resolveNotesCapWindow, type NotesCapWindowLease } from "../notes-cap-registry.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
 //
@@ -46,6 +47,10 @@ type NotesUpdatePhase = {
 };
 
 type StopTrigger = "client" | "session-cap";
+type NotesHandlerAuthContext = {
+    userId?: string;
+    recordingSessionId?: string;
+};
 
 const NOTES_UPDATE_PHASES: NotesUpdatePhase[] = [
     { name: "early", untilMs: 2 * 60_000, maxWaitMs: 15_000, minPendingChars: 80 },
@@ -90,8 +95,14 @@ export class NotesHandler implements TranscriptionHandler {
     private stopPromise: Promise<void> | null = null;
     private closed = false;
     private overloadSignaled = false;
+    private capWindow: NotesCapWindowLease | null = null;
+    private capWindowClosed = false;
 
-    constructor(private socket: WebSocket, private sessionId: string) {
+    constructor(
+        private socket: WebSocket,
+        private sessionId: string,
+        private authContext: NotesHandlerAuthContext = {}
+    ) {
         this.st = {
             ...makeAudioState(),
             noteStyle: "general",
@@ -138,6 +149,15 @@ export class NotesHandler implements TranscriptionHandler {
         this.isStopping = false;
         this.stopPromise = null;
         this.overloadSignaled = false;
+        this.capWindowClosed = false;
+        this.capWindow = this.authContext.userId
+            ? resolveNotesCapWindow({
+                userId: this.authContext.userId,
+                recordingSessionId: this.authContext.recordingSessionId,
+                backendSessionId: this.sessionId,
+                continuationRequested,
+            })
+            : null;
         this.startSessionCapTimer();
 
         // Log resolved config only; never log notes content.
@@ -150,7 +170,9 @@ export class NotesHandler implements TranscriptionHandler {
             `providedNotesChars: ${providedNotesChars}, ` +
             `seededNotesChars: ${this.st.currentMarkdown.length}, ` +
             `canonicalNotesChars: ${this.st.currentMarkdown.length}, ` +
-            `truncatedForCanonical: false`
+            `truncatedForCanonical: false, ` +
+            `capWindow: ${this.capWindow !== null}, ` +
+            `capWindowReused: ${this.capWindow?.capWindowReused ?? false}`
         );
 
         this.send({ type: "started", mode: "notes" });
@@ -432,14 +454,17 @@ export class NotesHandler implements TranscriptionHandler {
 
             st.currentMarkdown = finalMarkdown;
             this.send({ type: "notes_final", notesMarkdown: finalMarkdown });
+            this.closeCapWindow();
         } catch (err) {
             console.error(`[${this.sessionId}][notes] Final pass error — ${safeErrorInfo(err)}`);
             this.send({ type: "notes_final", notesMarkdown: st.currentMarkdown });
+            this.closeCapWindow();
         }
     }
 
     onClose(): void {
         if (this.closed) return;
+        const closeCapWindow = this.isStopping;
         this.closed = true;
         this.clearSessionCapTimer();
         // Stop any future scheduling: an in-flight update's finally-block
@@ -450,24 +475,35 @@ export class NotesHandler implements TranscriptionHandler {
         this.pendingNotesTranscript = "";
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
+        if (closeCapWindow) {
+            this.closeCapWindow();
+        } else {
+            this.markCapWindowReconnectable();
+        }
         console.log(`[${this.sessionId}][notes] Handler closed`);
     }
 
     private startSessionCapTimer(): void {
         this.clearSessionCapTimer();
-        const remainingMs = MAX_NOTES_SESSION_MS - (Date.now() - this.sessionStartedAt);
+        const capStartedAtMs = this.capWindow?.capStartedAtMs ?? this.sessionStartedAt;
+        const capDeadlineMs = this.capWindow?.capDeadlineMs ?? (capStartedAtMs + MAX_NOTES_SESSION_MS);
+        const remainingMs = capDeadlineMs - Date.now();
         if (remainingMs <= 0) {
             console.warn(
                 `[${this.sessionId}][notes] Session cap reached immediately — ` +
-                `maxMs: ${MAX_NOTES_SESSION_MS}`
+                `maxMs: ${MAX_NOTES_SESSION_MS}, ` +
+                `capElapsedMs: ${Date.now() - capStartedAtMs}`
             );
-            void this.beginStop("session-cap");
+            const timer = setTimeout(() => {
+                void this.beginStop("session-cap");
+            }, 0);
+            timer.unref?.();
             return;
         }
         this.sessionCapTimer = setTimeout(() => {
             console.warn(
                 `[${this.sessionId}][notes] Session cap reached — ` +
-                `maxMs: ${MAX_NOTES_SESSION_MS}, sessionMs: ${Date.now() - this.sessionStartedAt}`
+                `maxMs: ${MAX_NOTES_SESSION_MS}, capElapsedMs: ${Date.now() - capStartedAtMs}`
             );
             void this.beginStop("session-cap");
         }, remainingMs);
@@ -475,7 +511,8 @@ export class NotesHandler implements TranscriptionHandler {
         this.sessionCapTimer.unref?.();
         console.log(
             `[${this.sessionId}][notes] Session cap armed — ` +
-            `maxMs: ${MAX_NOTES_SESSION_MS}, remainingMs: ${remainingMs}`
+            `maxMs: ${MAX_NOTES_SESSION_MS}, remainingMs: ${remainingMs}, ` +
+            `logicalCap: ${this.capWindow !== null}`
         );
     }
 
@@ -617,6 +654,17 @@ export class NotesHandler implements TranscriptionHandler {
             `incomingChunkBytes: ${incomingChunkBytes}, ` +
             `overloadSignaled: ${this.overloadSignaled}`
         );
+    }
+
+    private markCapWindowReconnectable(): void {
+        if (!this.capWindow || this.capWindowClosed) return;
+        this.capWindow.markReconnectable();
+    }
+
+    private closeCapWindow(): void {
+        if (!this.capWindow || this.capWindowClosed) return;
+        this.capWindow.close();
+        this.capWindowClosed = true;
     }
 
     private send(msg: object): void {

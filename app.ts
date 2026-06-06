@@ -6,6 +6,7 @@ import { TranscriptionHandler, StartPayload, InboundMessage } from "./types.js";
 import { FormFillHandler } from "./handlers/FormFillHandler.js";
 import { NotesHandler } from "./handlers/NotesHandler.js";
 import { verifyWSToken } from "./ws-token.js";
+import type { WSTokenPayload } from "./ws-token.js";
 import { safeErrorInfo } from "./safe-log.js";
 
 const wss = new WebSocketServer({ port: 5551 });
@@ -101,7 +102,7 @@ wss.on("connection", (socket: WebSocket, req) => {
                 return;
             }
 
-            let tokenPayload: { userId: string; mode: string };
+            let tokenPayload: WSTokenPayload;
             try {
                 tokenPayload = verifyWSToken(startMsg.token);
             } catch (err) {
@@ -141,7 +142,10 @@ wss.on("connection", (socket: WebSocket, req) => {
                     handler = new FormFillHandler(socket, sessionId);
                     break;
                 case "notes":
-                    handler = new NotesHandler(socket, sessionId);
+                    handler = new NotesHandler(socket, sessionId, {
+                        userId: tokenPayload.userId,
+                        recordingSessionId: tokenPayload.recordingSessionId,
+                    });
                     break;
                 default:
                     socket.send(JSON.stringify({

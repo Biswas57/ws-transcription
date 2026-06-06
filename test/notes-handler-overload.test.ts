@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_NOTES_SESSION_MS } from "../types.js";
+import {
+    clearNotesCapWindowsForTest,
+    getNotesCapWindowForTest,
+} from "../notes-cap-registry.js";
 
 const LONG_TRANSCRIPT = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
 
@@ -88,6 +93,7 @@ function deferredBatch(): {
 }
 
 beforeEach(() => {
+    clearNotesCapWindowsForTest();
     mockState.transcribeAudioBatch.mockReset();
     mockState.reviseTranscription.mockReset();
     mockState.generateNotesIncrementalPatch.mockReset();
@@ -104,7 +110,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    clearNotesCapWindowsForTest();
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("Notes overload recovery support", () => {
@@ -193,5 +201,46 @@ describe("Notes overload recovery support", () => {
         await stopPromise;
 
         expect(socket.send).not.toHaveBeenCalled();
+    });
+});
+
+describe("Notes cap continuity handler behaviour", () => {
+    it("finalises through the existing session-cap path when reconnect starts after the logical deadline", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const userId = "notes-cap-user";
+        const recordingSessionId = "notes-recording-session";
+        const currentMarkdown = "## Existing\n\n- Preserved note.";
+
+        const firstSocket = makeSocket();
+        const firstHandler = new NotesHandler(firstSocket as never, "test-notes-cap-a", {
+            userId,
+            recordingSessionId,
+        });
+        await startNotes(firstHandler);
+
+        vi.setSystemTime(MAX_NOTES_SESSION_MS - 30_000);
+        firstHandler.onClose();
+        expect(getNotesCapWindowForTest(userId, recordingSessionId)?.state).toBe("reconnectable");
+
+        vi.setSystemTime(MAX_NOTES_SESSION_MS + 1);
+        const reconnectSocket = makeSocket();
+        const reconnectHandler = new NotesHandler(reconnectSocket as never, "test-notes-cap-b", {
+            userId,
+            recordingSessionId,
+        });
+
+        await startNotes(reconnectHandler, currentMarkdown);
+        await vi.runOnlyPendingTimersAsync();
+
+        const sent = messages(reconnectSocket);
+        expect(sent[0]).toEqual({ type: "started", mode: "notes" });
+        const final = sent.find((msg) => msg.type === "notes_final");
+        expect(final?.notesMarkdown).toBe(currentMarkdown);
+        expect(mockState.finalizeNotes).toHaveBeenCalledWith("", currentMarkdown, "meeting", ["Summary"]);
+        expect(getNotesCapWindowForTest(userId, recordingSessionId)).toBeNull();
+
+        reconnectHandler.onClose();
     });
 });
