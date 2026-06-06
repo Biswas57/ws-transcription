@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { TranscriptionHandler, StartPayload, InboundMessage } from "./types.js";
 import { FormFillHandler } from "./handlers/FormFillHandler.js";
@@ -8,9 +9,31 @@ import { NotesHandler } from "./handlers/NotesHandler.js";
 import { verifyWSToken } from "./ws-token.js";
 import type { WSTokenPayload } from "./ws-token.js";
 import { safeErrorInfo } from "./safe-log.js";
+import { handleNotesTransformRequest } from "./notes-transform-routes.js";
 
-const wss = new WebSocketServer({ port: 5551 });
-console.log(`[app] WebSocket server listening on ws://0.0.0.0:5551`);
+const PORT = 5551;
+const server = createServer((req, res) => {
+    void handleNotesTransformRequest(req, res).catch((err) => {
+        console.error(`[app] HTTP route error — ${safeErrorInfo(err)}`);
+        if (!res.headersSent) {
+            const body = JSON.stringify({
+                error: {
+                    code: "transform-failed",
+                    message: "Notes transform failed.",
+                },
+            });
+            res.writeHead(500, {
+                "content-type": "application/json; charset=utf-8",
+                "content-length": Buffer.byteLength(body),
+            });
+            res.end(body);
+        }
+    });
+});
+const wss = new WebSocketServer({ server });
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`[app] WebSocket server listening on ws://0.0.0.0:${PORT}; HTTP routes on same port`);
+});
 
 // ── Optional: origin check ──────────────────────────────────────────────────
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN;
