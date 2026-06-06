@@ -2,8 +2,6 @@ import type { WebSocket } from "ws";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-export const TRANSCRIPTION_CACHE_TTL = 60000; // 1 minute cache
-export const MAX_CACHE_ENTRIES = 500;
 // MIN_CHUNK_NUM: minimum audio chunks before the first GPT pass fires.
 // At 2s recorder intervals, 6 chunks = ~12s of audio before first update.
 // Previously 12 chunks at 3s = ~36s — too long for meaningful real-time feel.
