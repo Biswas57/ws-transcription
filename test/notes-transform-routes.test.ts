@@ -255,7 +255,7 @@ describe("notes transform HTTP routes", () => {
 
     it("maps transform helper errors to safe JSON errors", async () => {
         const generateSummary = vi.fn(async () => {
-            throw codedError("transform-failed");
+            throw codedError("transform-output-missing-key");
         });
         const generateReorganisation = vi.fn(async () => {
             throw codedError("reorganise-output-too-short");
@@ -269,8 +269,8 @@ describe("notes transform HTTP routes", () => {
             expect(summary.status).toBe(500);
             expect(summary.body).toEqual({
                 error: {
-                    code: "transform-failed",
-                    message: "Notes transform failed.",
+                    code: "transform-output-missing-key",
+                    message: "Notes transform output was invalid.",
                 },
             });
 

@@ -180,21 +180,64 @@ describe("parse-gpt stabilisation", () => {
         expect(request.messages[0].content).toContain("Preserve existing structure where possible.");
     });
 
-    it("rejects malformed or missing summary JSON", async () => {
+    it("handles fenced summary JSON and common summary alias keys", async () => {
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{
+                message: {
+                    content: "```json\n{\"summaryMarkdown\":\"## Summary\\n\\n- Fenced summary.\"}\n```",
+                },
+            }],
+        });
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
+            summaryMarkdown: "## Summary\n\n- Fenced summary.",
+        });
+
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{ message: { content: JSON.stringify({ notesMarkdown: "## Summary\n\n- Alias summary." }) } }],
+        });
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
+            summaryMarkdown: "## Summary\n\n- Alias summary.",
+        });
+    });
+
+    it("rejects malformed, missing, empty, and error-like summary output with specific codes", async () => {
         openAiMock.create.mockResolvedValueOnce({
             choices: [{ message: { content: "not json" } }],
         });
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
-            code: "transform-failed",
+            code: "transform-output-invalid-json",
         });
 
         openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ notesMarkdown: "wrong key" }) } }],
+            choices: [{ message: { content: JSON.stringify({ summary: "wrong key" }) } }],
         });
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
-            code: "transform-failed",
+            code: "transform-output-missing-key",
+            details: expect.objectContaining({
+                stage: "missing-key",
+                jsonKeys: ["summary"],
+                expectedKey: "summaryMarkdown",
+            }),
+        });
+
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "   " }) } }],
+        });
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+            code: "transform-output-empty",
+        });
+
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "Error: unable to summarise." }) } }],
+        });
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+            code: "transform-output-error-like",
         });
     });
 
@@ -228,7 +271,7 @@ describe("parse-gpt stabilisation", () => {
         });
 
         await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
-            code: "transform-failed",
+            code: "transform-output-invalid-json",
         });
 
         openAiMock.create.mockResolvedValueOnce({
@@ -236,7 +279,7 @@ describe("parse-gpt stabilisation", () => {
         });
 
         await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
-            code: "transform-failed",
+            code: "transform-output-missing-key",
         });
 
         openAiMock.create.mockResolvedValueOnce({

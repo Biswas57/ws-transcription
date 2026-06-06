@@ -61,6 +61,11 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
     "reorganise-output-too-short": "Reorganised notes were unexpectedly short.",
     "too-many-target-sections": "Too many target sections were supplied.",
     "transform-failed": "Notes transform failed.",
+    "transform-output-empty": "Notes transform output was empty.",
+    "transform-output-error-like": "Notes transform output was invalid.",
+    "transform-output-invalid-json": "Notes transform output was invalid.",
+    "transform-output-missing-key": "Notes transform output was invalid.",
+    "transform-provider-error": "Notes transform failed.",
     "transform-service-unavailable": "Notes transform service is unavailable.",
     unauthorised: "Unauthorised.",
 };

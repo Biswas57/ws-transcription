@@ -44,10 +44,27 @@ export type GenerateNotesReorganisationArgs = {
 
 export type NotesTransformErrorCode =
     | "transform-failed"
+    | "transform-output-invalid-json"
+    | "transform-output-missing-key"
+    | "transform-output-empty"
+    | "transform-output-error-like"
+    | "transform-provider-error"
     | "reorganise-output-too-short";
 
+export type NotesTransformErrorDetails = {
+    stage?: string;
+    outputChars?: number;
+    jsonKeys?: string[];
+    expectedKey?: string;
+    usedAliasKey?: string;
+};
+
 export class NotesTransformError extends Error {
-    constructor(readonly code: NotesTransformErrorCode, message: string) {
+    constructor(
+        readonly code: NotesTransformErrorCode,
+        message: string,
+        readonly details: NotesTransformErrorDetails = {}
+    ) {
         super(message);
         this.name = "NotesTransformError";
     }
@@ -358,7 +375,8 @@ Return only valid JSON:
 
 No markdown fences.
 No commentary.
-No extra keys.`;
+No extra keys.
+Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
 
 const NOTES_REORGANISE_SYS_TXT = `\
 You are a professional notes transformation editor in an Australian context
@@ -423,7 +441,8 @@ Return only valid JSON:
 
 No markdown fences.
 No commentary.
-No extra keys.`;
+No extra keys.
+Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -540,35 +559,134 @@ function parseNotesLivePatchContent(content: string): NotesLivePatch {
 
 function parseNotesTransformMarkdown(
     content: string,
-    key: "summaryMarkdown" | "reorganisedMarkdown"
+    key: "summaryMarkdown" | "reorganisedMarkdown",
+    aliasKeys: string[] = []
 ): string {
+    const cleanedContent = extractJsonObjectText(content);
+    const outputChars = content.length;
     let parsed: unknown;
     try {
-        parsed = JSON.parse(content);
+        parsed = JSON.parse(cleanedContent);
     } catch {
-        throw new NotesTransformError("transform-failed", "Transform returned invalid JSON.");
+        throw new NotesTransformError(
+            "transform-output-invalid-json",
+            "Transform returned invalid JSON.",
+            {
+                stage: "invalid-json",
+                outputChars,
+            }
+        );
     }
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new NotesTransformError("transform-failed", "Transform returned invalid JSON shape.");
+        throw new NotesTransformError(
+            "transform-output-invalid-json",
+            "Transform returned invalid JSON shape.",
+            {
+                stage: "invalid-json-shape",
+                outputChars,
+            }
+        );
     }
 
-    const value = (parsed as Record<string, unknown>)[key];
+    const parsedObject = parsed as Record<string, unknown>;
+    const jsonKeys = Object.keys(parsedObject);
+    let value = parsedObject[key];
+    let usedAliasKey: string | undefined;
+
     if (typeof value !== "string") {
-        throw new NotesTransformError("transform-failed", `Transform response missing ${key}.`);
+        for (const aliasKey of aliasKeys) {
+            if (typeof parsedObject[aliasKey] === "string") {
+                value = parsedObject[aliasKey];
+                usedAliasKey = aliasKey;
+                break;
+            }
+        }
+    }
+
+    if (typeof value !== "string") {
+        throw new NotesTransformError(
+            "transform-output-missing-key",
+            `Transform response missing ${key}.`,
+            {
+                stage: "missing-key",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+            }
+        );
     }
 
     const markdown = value.trim();
-    if (!markdown || looksLikeTransformErrorOutput(markdown)) {
-        throw new NotesTransformError("transform-failed", "Transform returned invalid markdown.");
+    if (!markdown) {
+        throw new NotesTransformError(
+            "transform-output-empty",
+            "Transform returned empty markdown.",
+            {
+                stage: "empty-output",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+                usedAliasKey,
+            }
+        );
+    }
+
+    if (looksLikeTransformErrorOutput(markdown)) {
+        throw new NotesTransformError(
+            "transform-output-error-like",
+            "Transform returned error-like markdown.",
+            {
+                stage: "error-like-output",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+                usedAliasKey,
+            }
+        );
+    }
+
+    if (usedAliasKey) {
+        console.warn(
+            `[notes-transform] Accepted alias output key — ` +
+            `expectedKey: ${key}, aliasKey: ${usedAliasKey}, ` +
+            `jsonKeys: ${formatJsonKeys(jsonKeys)}, outputChars: ${outputChars}`
+        );
     }
 
     return markdown;
 }
 
+function extractJsonObjectText(content: string): string {
+    const trimmed = content.trim();
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    return fenced ? fenced[1].trim() : trimmed;
+}
+
 function looksLikeTransformErrorOutput(markdown: string): boolean {
     const firstLine = markdown.trim().split(/\r?\n/, 1)[0]?.trim().toLowerCase() ?? "";
     return /^(error|sorry|unable to|i cannot|i can't|as an ai)\b/.test(firstLine);
+}
+
+function formatNotesTransformError(err: NotesTransformError): string {
+    const parts = [
+        `code=${err.code}`,
+    ];
+
+    if (err.details.stage) parts.push(`stage=${err.details.stage}`);
+    if (typeof err.details.outputChars === "number") {
+        parts.push(`outputChars=${err.details.outputChars}`);
+    }
+    if (err.details.expectedKey) parts.push(`expectedKey=${err.details.expectedKey}`);
+    if (err.details.usedAliasKey) parts.push(`usedAliasKey=${err.details.usedAliasKey}`);
+    if (err.details.jsonKeys) parts.push(`jsonKeys=${formatJsonKeys(err.details.jsonKeys)}`);
+
+    return parts.join(" ");
+}
+
+function formatJsonKeys(keys: string[]): string {
+    if (keys.length === 0) return "[]";
+    return `[${keys.map((key) => key.replace(/[^A-Za-z0-9_-]/g, "")).filter(Boolean).join(",")}]`;
 }
 
 function notesTransformOutputBudget(inputTokens: number, multiplier: number): number {
@@ -872,10 +990,22 @@ export async function generateNotesSummary(
 
         const content = completion.choices?.[0]?.message?.content;
         if (!content) {
-            throw new NotesTransformError("transform-failed", "Summary transform returned empty content.");
+            throw new NotesTransformError(
+                "transform-output-empty",
+                "Summary transform returned empty content.",
+                {
+                    stage: "empty-response",
+                    outputChars: 0,
+                    expectedKey: "summaryMarkdown",
+                }
+            );
         }
 
-        const summaryMarkdown = parseNotesTransformMarkdown(content, "summaryMarkdown");
+        const summaryMarkdown = parseNotesTransformMarkdown(
+            content,
+            "summaryMarkdown",
+            ["notesMarkdown", "markdown", "outputMarkdown"]
+        );
         console.log(
             `[notes-transform-summary] Complete — ` +
             `inputChars: ${notesMarkdown.length}, ` +
@@ -891,7 +1021,7 @@ export async function generateNotesSummary(
                 `[notes-transform-summary] Invalid output — ` +
                 `inputChars: ${notesMarkdown.length}, ` +
                 `duration: ${Date.now() - transformStart}ms, ` +
-                `error: ${safeErrorInfo(err)}`
+                `${formatNotesTransformError(err)}`
             );
             throw err;
         }
@@ -902,7 +1032,13 @@ export async function generateNotesSummary(
             `duration: ${Date.now() - transformStart}ms, ` +
             `error: ${safeErrorInfo(err)}`
         );
-        throw new NotesTransformError("transform-failed", "Summary transform failed.");
+        throw new NotesTransformError(
+            "transform-provider-error",
+            "Summary transform failed.",
+            {
+                stage: "provider-error",
+            }
+        );
     }
 }
 
@@ -936,14 +1072,27 @@ export async function generateNotesReorganisation(
 
         const content = completion.choices?.[0]?.message?.content;
         if (!content) {
-            throw new NotesTransformError("transform-failed", "Reorganise transform returned empty content.");
+            throw new NotesTransformError(
+                "transform-output-empty",
+                "Reorganise transform returned empty content.",
+                {
+                    stage: "empty-response",
+                    outputChars: 0,
+                    expectedKey: "reorganisedMarkdown",
+                }
+            );
         }
 
         const reorganisedMarkdown = parseNotesTransformMarkdown(content, "reorganisedMarkdown");
         if (reorganisedMarkdown.length < notesMarkdown.length * 0.5) {
             throw new NotesTransformError(
                 "reorganise-output-too-short",
-                "Reorganise transform returned unexpectedly short markdown."
+                "Reorganise transform returned unexpectedly short markdown.",
+                {
+                    stage: "too-short-output",
+                    outputChars: reorganisedMarkdown.length,
+                    expectedKey: "reorganisedMarkdown",
+                }
             );
         }
 
@@ -964,7 +1113,7 @@ export async function generateNotesReorganisation(
                 `inputChars: ${notesMarkdown.length}, ` +
                 `targetSectionCount: ${targetSections.length}, ` +
                 `duration: ${Date.now() - transformStart}ms, ` +
-                `error: ${safeErrorInfo(err)}`
+                `${formatNotesTransformError(err)}`
             );
             throw err;
         }
@@ -976,7 +1125,13 @@ export async function generateNotesReorganisation(
             `duration: ${Date.now() - transformStart}ms, ` +
             `error: ${safeErrorInfo(err)}`
         );
-        throw new NotesTransformError("transform-failed", "Reorganise transform failed.");
+        throw new NotesTransformError(
+            "transform-provider-error",
+            "Reorganise transform failed.",
+            {
+                stage: "provider-error",
+            }
+        );
     }
 }
 

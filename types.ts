@@ -16,7 +16,7 @@ export const NOTES_DEFAULT_MIN_CHUNKS = 15;
 // Whisper/revision pressure during established sessions. Forms mode is
 // unaffected and uses FORMS_MIN_CHUNK_NUM.
 export const NOTES_CHUNK_PHASES: { untilMs: number; minChunks: number }[] = [
-    { untilMs: 30_000, minChunks: 4 },
+    { untilMs: 30_000, minChunks: 2 },
     { untilMs: 60_000, minChunks: 5 },
     { untilMs: 5 * 60_000, minChunks: 10 },
 ];
