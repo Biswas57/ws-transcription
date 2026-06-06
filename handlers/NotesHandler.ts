@@ -172,14 +172,11 @@ export class NotesHandler implements TranscriptionHandler {
 
         if (this.overloadSignaled) return;
 
-        if (this.queueLoad() >= MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS) {
+        const queueLoad = this.queueLoad();
+        if (queueLoad >= MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS) {
             if (!this.overloadSignaled) {
                 this.overloadSignaled = true;
-                console.warn(
-                    `[${this.sessionId}][notes] Queue overloaded — ` +
-                    `queue: ${this.queue.size} queued, ${this.queue.pending} pending, ` +
-                    `maxJobs: ${MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS}`
-                );
+                this.logOverload(queueLoad, chunk.length);
                 this.send({
                     type: "error",
                     code: "transcription-overloaded",
@@ -604,6 +601,22 @@ export class NotesHandler implements TranscriptionHandler {
 
     private queueLoad(): number {
         return this.queue.size + this.queue.pending;
+    }
+
+    private logOverload(queueLoad: number, incomingChunkBytes: number): void {
+        console.warn(
+            `[${this.sessionId}][notes] Queue overloaded — ` +
+            `queue.size: ${this.queue.size}, ` +
+            `queue.pending: ${this.queue.pending}, ` +
+            `queueLoad: ${queueLoad}, ` +
+            `maxJobs: ${MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS}, ` +
+            `sessionAgeMs: ${Date.now() - this.sessionStartedAt}, ` +
+            `currentMarkdownChars: ${this.st.currentMarkdown.length}, ` +
+            `pendingNotesTranscriptChars: ${this.pendingNotesTranscript.length}, ` +
+            `audioBufferBytes: ${this.st.audioBuffer.length}, ` +
+            `incomingChunkBytes: ${incomingChunkBytes}, ` +
+            `overloadSignaled: ${this.overloadSignaled}`
+        );
     }
 
     private send(msg: object): void {
