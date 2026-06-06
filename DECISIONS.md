@@ -105,13 +105,13 @@ audio batch
 
 ### Notes AI Post-Processing Over HTTP
 
-- Future notes Summarise/Reorganise actions should use server-to-server HTTP endpoints on `ws-transcription`.
+- Notes Summarise/Reorganise actions use server-to-server HTTP endpoints on `ws-transcription`.
 - `formify-web` should call those endpoints from protected tRPC/server code.
 - The browser WebSocket protocol remains focused on live audio transcription only.
 - Do not duplicate OpenAI/Groq provider logic directly in `formify-web` unless this decision is revisited.
-- Planned internal endpoints are `POST /internal/notes/summarise` and `POST /internal/notes/reorganise`.
-- Likely internal auth header: `x-formify-internal-secret: <INTERNAL_TRANSFORM_SECRET>`.
-- Internal HTTP routes require an HTTP-capable server entrypoint while preserving current WebSocket behaviour.
+- Canonical v1 endpoints are `POST /notes/transform/summarise` and `POST /notes/transform/reorganise`.
+- Internal auth uses `Authorization: Bearer <NOTES_TRANSFORM_SECRET>`.
+- HTTP routes share the existing service port with the WebSocket server and must preserve current WebSocket behaviour.
 
 ### Notes Transform Source Of Truth
 

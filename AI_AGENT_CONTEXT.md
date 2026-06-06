@@ -2,10 +2,12 @@
 
 ## What This Repo Does
 
-This repo is the Formify transcription WebSocket server. It accepts browser-recorded WebM/Opus audio over a WebSocket, sends audio chunks to OpenAI Whisper, cleans up the transcript with GPT, then returns either:
+This repo is the Formify transcription WebSocket server plus backend-owned Notes transform service. It accepts browser-recorded WebM/Opus audio over a WebSocket, sends audio chunks to OpenAI Whisper, cleans up the transcript with GPT, then returns either:
 
 - structured form attributes in `forms` mode
 - live and final Markdown notes in `notes` mode
+
+It also exposes Bearer-protected server-to-server HTTP endpoints for post-processing supplied visible Notes markdown.
 
 The server is designed for Australian professional contexts such as healthcare, finance, social work, HR, and meetings.
 
@@ -24,7 +26,8 @@ The main Formify web app is separate from this repo. This server expects the web
 
 ## Main Files
 
-- `app.ts`: WebSocket server on port `5551`; connection lifecycle, optional origin check, JWT verification, mode routing.
+- `app.ts`: shared HTTP/WebSocket server on port `5551`; connection lifecycle, optional origin check, JWT verification, mode routing, and HTTP route attachment.
+- `notes-transform-routes.ts`: Bearer-protected HTTP routes for Notes summarise/reorganise transforms.
 - `types.ts`: WebSocket message types, shared constants, handler interfaces, audio state shapes.
 - `handlers/FormFillHandler.ts`: `forms` mode implementation; buffers audio, transcribes, revises, extracts fields, sends incremental/final attributes.
 - `handlers/NotesHandler.ts`: `notes` mode implementation; buffers audio, transcribes, revises, updates Markdown notes, sends incremental/final notes.
@@ -97,6 +100,46 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `VAD_MODE`: optional Notes VAD mode, one of `off`, `dry-run`, or `gate`; default is `off`.
 - `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
 - `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
+- `NOTES_TRANSFORM_SECRET`: required for server-to-server Notes transform HTTP endpoints; callers send `Authorization: Bearer <secret>`.
+
+## HTTP Notes Transform Contract
+
+The Notes transform endpoints are server-to-server only. The browser should not call them directly and must never receive `NOTES_TRANSFORM_SECRET`.
+
+Auth:
+
+```txt
+Authorization: Bearer <NOTES_TRANSFORM_SECRET>
+```
+
+Routes:
+
+```txt
+POST /notes/transform/summarise
+POST /notes/transform/reorganise
+```
+
+Summarise request/response:
+
+```json
+{ "notesMarkdown": "## Current notes\n\n- ...", "noteStyle": "meeting" }
+```
+
+```json
+{ "summaryMarkdown": "## Summary\n\n- ..." }
+```
+
+Reorganise request/response:
+
+```json
+{ "notesMarkdown": "## Current notes\n\n- ...", "noteStyle": "meeting", "targetSections": ["Decisions", "Actions"] }
+```
+
+```json
+{ "reorganisedMarkdown": "## Decisions\n\n- ..." }
+```
+
+Both transforms operate only on supplied current visible `notesMarkdown`; they do not use audio, transcript, DB state, previous backend session state, or hidden note history. Errors return JSON `{ "error": { "code": "...", "message": "..." } }` without echoing note content.
 
 ## WebSocket Contract
 
