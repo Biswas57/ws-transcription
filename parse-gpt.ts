@@ -49,6 +49,7 @@ export type NotesTransformErrorCode =
     | "transform-output-missing-key"
     | "transform-output-empty"
     | "transform-output-error-like"
+    | "transform-output-incomplete"
     | "transform-provider-error"
     | "reorganise-output-too-short";
 
@@ -58,6 +59,7 @@ export type NotesTransformErrorDetails = {
     jsonKeys?: string[];
     expectedKey?: string;
     usedAliasKey?: string;
+    incompleteReason?: string;
 };
 
 export class NotesTransformError extends Error {
@@ -680,6 +682,7 @@ function formatNotesTransformError(err: NotesTransformError): string {
     }
     if (err.details.expectedKey) parts.push(`expectedKey=${err.details.expectedKey}`);
     if (err.details.usedAliasKey) parts.push(`usedAliasKey=${err.details.usedAliasKey}`);
+    if (err.details.incompleteReason) parts.push(`incompleteReason=${safeLogValue(err.details.incompleteReason)}`);
     if (err.details.jsonKeys) parts.push(`jsonKeys=${formatJsonKeys(err.details.jsonKeys)}`);
 
     return parts.join(" ");
@@ -759,51 +762,6 @@ async function runOpenAIResponsesJson(args: {
         incompleteReason,
         durationMs,
     };
-}
-
-function logNotesTransformProviderMetadata(
-    label: "summary" | "reorganise",
-    completion: unknown,
-    content: string | null | undefined,
-    metadata: {
-        inputChars: number;
-        inputTokens: number;
-        maxOutputTokens: number;
-        targetSectionCount?: number;
-    }
-): void {
-    const response = completion as {
-        choices?: Array<{ finish_reason?: unknown }>;
-        usage?: {
-            prompt_tokens?: unknown;
-            completion_tokens?: unknown;
-            total_tokens?: unknown;
-            completion_tokens_details?: {
-                reasoning_tokens?: unknown;
-            };
-        };
-    };
-    const finishReason = safeString(response.choices?.[0]?.finish_reason) ?? "unknown";
-    const choiceCount = Array.isArray(response.choices) ? response.choices.length : 0;
-    const usage = response.usage;
-    const details = [
-        `inputChars: ${metadata.inputChars}`,
-        `inputTokens: ${metadata.inputTokens}`,
-        `maxOutputTokens: ${metadata.maxOutputTokens}`,
-        `finishReason: ${finishReason}`,
-        `choiceCount: ${choiceCount}`,
-        `contentChars: ${content?.length ?? 0}`,
-    ];
-
-    if (typeof metadata.targetSectionCount === "number") {
-        details.push(`targetSectionCount: ${metadata.targetSectionCount}`);
-    }
-    appendSafeNumber(details, "promptTokens", usage?.prompt_tokens);
-    appendSafeNumber(details, "completionTokens", usage?.completion_tokens);
-    appendSafeNumber(details, "totalTokens", usage?.total_tokens);
-    appendSafeNumber(details, "reasoningTokens", usage?.completion_tokens_details?.reasoning_tokens);
-
-    console.log(`[notes-transform-${label}] Provider — ${details.join(", ")}`);
 }
 
 function safeString(value: unknown): string | null {
@@ -1117,29 +1075,36 @@ export async function generateNotesSummary(
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, 0.8);
 
     try {
-        const completion = await openai.chat.completions.create({
+        const response = await runOpenAIResponsesJson({
+            label: "notes-transform-summary",
             model: GPT_FINAL_MODEL,
-            messages: [
-                { role: "system", content: NOTES_SUMMARISE_SYS_TXT },
-                {
-                    role: "user",
-                    content: JSON.stringify({
-                        note_style: args.noteStyle,
-                        current_visible_notes: notesMarkdown,
-                    }),
-                },
-            ],
-            response_format: { type: "json_object" },
-            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
-            max_completion_tokens: maxOutputTokens,
-        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
-
-        const content = completion.choices?.[0]?.message?.content;
-        logNotesTransformProviderMetadata("summary", completion, content, {
-            inputChars: notesMarkdown.length,
-            inputTokens,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: NOTES_SUMMARISE_SYS_TXT,
+            input: JSON.stringify({
+                note_style: args.noteStyle,
+                current_visible_notes: notesMarkdown,
+            }),
             maxOutputTokens,
+            metadata: {
+                inputChars: notesMarkdown.length,
+                inputTokens,
+            },
         });
+
+        const content = response.outputText;
+        if (response.status === "incomplete") {
+            throw new NotesTransformError(
+                "transform-output-incomplete",
+                "Summary transform returned incomplete content.",
+                {
+                    stage: "incomplete-response",
+                    outputChars: content.length,
+                    expectedKey: "summaryMarkdown",
+                    incompleteReason: response.incompleteReason ?? undefined,
+                }
+            );
+        }
+
         if (!content) {
             throw new NotesTransformError(
                 "transform-output-empty",
@@ -1203,31 +1168,38 @@ export async function generateNotesReorganisation(
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, 1.1);
 
     try {
-        const completion = await openai.chat.completions.create({
+        const response = await runOpenAIResponsesJson({
+            label: "notes-transform-reorganise",
             model: GPT_FINAL_MODEL,
-            messages: [
-                { role: "system", content: NOTES_REORGANISE_SYS_TXT },
-                {
-                    role: "user",
-                    content: JSON.stringify({
-                        note_style: args.noteStyle,
-                        target_sections: targetSections.length > 0 ? targetSections : undefined,
-                        current_visible_notes: notesMarkdown,
-                    }),
-                },
-            ],
-            response_format: { type: "json_object" },
-            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
-            max_completion_tokens: maxOutputTokens,
-        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
-
-        const content = completion.choices?.[0]?.message?.content;
-        logNotesTransformProviderMetadata("reorganise", completion, content, {
-            inputChars: notesMarkdown.length,
-            inputTokens,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: NOTES_REORGANISE_SYS_TXT,
+            input: JSON.stringify({
+                note_style: args.noteStyle,
+                target_sections: targetSections.length > 0 ? targetSections : undefined,
+                current_visible_notes: notesMarkdown,
+            }),
             maxOutputTokens,
-            targetSectionCount: targetSections.length,
+            metadata: {
+                inputChars: notesMarkdown.length,
+                inputTokens,
+                targetSectionCount: targetSections.length,
+            },
         });
+
+        const content = response.outputText;
+        if (response.status === "incomplete") {
+            throw new NotesTransformError(
+                "transform-output-incomplete",
+                "Reorganise transform returned incomplete content.",
+                {
+                    stage: "incomplete-response",
+                    outputChars: content.length,
+                    expectedKey: "reorganisedMarkdown",
+                    incompleteReason: response.incompleteReason ?? undefined,
+                }
+            );
+        }
+
         if (!content) {
             throw new NotesTransformError(
                 "transform-output-empty",

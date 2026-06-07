@@ -237,9 +237,9 @@ describe("parse-gpt stabilisation", () => {
     });
 
     it("generates notes summaries with final-quality reasoning and required prompt constraints", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "## Summary\n\n- Condensed note." }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ summaryMarkdown: "## Summary\n\n- Condensed note." }))
+        );
 
         const result = await generateNotesSummary({
             notesMarkdown: LONG_NOTES,
@@ -247,32 +247,30 @@ describe("parse-gpt stabilisation", () => {
         });
 
         expect(result).toEqual({ summaryMarkdown: "## Summary\n\n- Condensed note." });
-        const request = openAiMock.create.mock.calls[0][0];
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
-        expect(request.reasoning_effort).toBe("medium");
-        expect(request.response_format).toEqual({ type: "json_object" });
-        expect(request.messages[0].content).toContain("Transform current visible notes only.");
-        expect(request.messages[0].content).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
-        expect(request.messages[0].content).toContain("If a question is answered elsewhere");
-        expect(request.messages[0].content).toContain("Preserve existing structure where possible.");
+        expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expect(request.instructions).toContain("Transform current visible notes only.");
+        expect(request.instructions).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
+        expect(request.instructions).toContain("If a question is answered elsewhere");
+        expect(request.instructions).toContain("Preserve existing structure where possible.");
+        expect(JSON.parse(request.input).current_visible_notes).toBe(LONG_NOTES);
     });
 
     it("handles fenced summary JSON and common summary alias keys", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{
-                message: {
-                    content: "```json\n{\"summaryMarkdown\":\"## Summary\\n\\n- Fenced summary.\"}\n```",
-                },
-            }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson("```json\n{\"summaryMarkdown\":\"## Summary\\n\\n- Fenced summary.\"}\n```")
+        );
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
             summaryMarkdown: "## Summary\n\n- Fenced summary.",
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ notesMarkdown: "## Summary\n\n- Alias summary." }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ notesMarkdown: "## Summary\n\n- Alias summary." }))
+        );
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
             summaryMarkdown: "## Summary\n\n- Alias summary.",
@@ -280,17 +278,15 @@ describe("parse-gpt stabilisation", () => {
     });
 
     it("rejects malformed, missing, empty, and error-like summary output with specific codes", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: "not json" } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(responsesJson("not json"));
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-invalid-json",
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ summary: "wrong key" }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ summary: "wrong key" }))
+        );
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-missing-key",
@@ -301,28 +297,49 @@ describe("parse-gpt stabilisation", () => {
             }),
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "   " }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ summaryMarkdown: "   " }))
+        );
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-empty",
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "Error: unable to summarise." }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ summaryMarkdown: "Error: unable to summarise." }))
+        );
 
         await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-error-like",
         });
     });
 
+    it("rejects incomplete summary Responses output without returning partial markdown", async () => {
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(
+                JSON.stringify({ summaryMarkdown: "## Partial" }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            )
+        );
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+            code: "transform-output-incomplete",
+            details: expect.objectContaining({
+                stage: "incomplete-response",
+                expectedKey: "summaryMarkdown",
+                incompleteReason: "max_output_tokens",
+            }),
+        });
+    });
+
     it("generates notes reorganisations with required prompt constraints", async () => {
         const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ reorganisedMarkdown: reorganised }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ reorganisedMarkdown: reorganised }))
+        );
 
         const result = await generateNotesReorganisation({
             notesMarkdown: LONG_NOTES,
@@ -331,40 +348,60 @@ describe("parse-gpt stabilisation", () => {
         });
 
         expect(result).toEqual({ reorganisedMarkdown: reorganised });
-        const request = openAiMock.create.mock.calls[0][0];
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
-        expect(request.reasoning_effort).toBe("medium");
-        expect(request.response_format).toEqual({ type: "json_object" });
-        expect(request.messages[0].content).toContain("Transform current visible notes only.");
-        expect(request.messages[0].content).toContain("Do not output tables in v1.");
-        expect(request.messages[0].content).toContain("- No relevant notes captured.");
-        expect(request.messages[0].content).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
-        expect(JSON.parse(request.messages[1].content).target_sections).toEqual(["Concepts", "Actions"]);
+        expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expect(request.instructions).toContain("Transform current visible notes only.");
+        expect(request.instructions).toContain("Do not output tables in v1.");
+        expect(request.instructions).toContain("- No relevant notes captured.");
+        expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
+        expect(JSON.parse(request.input).target_sections).toEqual(["Concepts", "Actions"]);
     });
 
     it("rejects malformed, missing, and suspiciously short reorganise output", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: "not json" } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(responsesJson("not json"));
 
         await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-invalid-json",
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ summaryMarkdown: "wrong key" }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ summaryMarkdown: "wrong key" }))
+        );
 
         await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "transform-output-missing-key",
         });
 
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ reorganisedMarkdown: "## Too short\n\n- Summary." }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ reorganisedMarkdown: "## Too short\n\n- Summary." }))
+        );
 
         await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
             code: "reorganise-output-too-short",
+        });
+    });
+
+    it("rejects incomplete reorganise Responses output without returning partial markdown", async () => {
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(
+                JSON.stringify({ reorganisedMarkdown: `${LONG_NOTES}\n\n## Partial` }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            )
+        );
+
+        await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+            code: "transform-output-incomplete",
+            details: expect.objectContaining({
+                stage: "incomplete-response",
+                expectedKey: "reorganisedMarkdown",
+                incompleteReason: "max_output_tokens",
+            }),
         });
     });
 });
