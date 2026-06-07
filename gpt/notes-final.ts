@@ -89,6 +89,18 @@ Return ONLY valid JSON:
 
 No markdown fences, no commentary, no extra keys.`;
 
+const NOTES_FINAL_RESPONSE_SCHEMA = {
+    name: "notes_final_response",
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+            notesMarkdown: { type: "string" },
+        },
+        required: ["notesMarkdown"],
+    },
+} as const;
+
 /**
  * Final polished notes pass over the complete transcript.
  * Runs on stop, same cadence as parseFinalAttributes.
@@ -139,6 +151,7 @@ export async function finalizeNotes(
                 available_transcript: truncated,
             }),
             maxOutputTokens,
+            jsonSchema: NOTES_FINAL_RESPONSE_SCHEMA,
             metadata: {
                 transcriptChars: fullTranscript.length,
                 truncatedChars: truncated.length,

@@ -25,6 +25,18 @@ Your job:
 Return ONLY a pure JSON object: {"correctedText": "<corrected transcript>"}
 No markdown, no code fences, no extra keys.`;
 
+const REVISION_RESPONSE_SCHEMA = {
+    name: "revision_response",
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+            correctedText: { type: "string" },
+        },
+        required: ["correctedText"],
+    },
+} as const;
+
 type RevisionMode = "forms" | "notes";
 
 type RevisionOptions = {
@@ -91,6 +103,7 @@ export async function reviseTranscription(rawText: string, options: RevisionOpti
             instructions: REVISE_SYS_TXT,
             input: rawText,
             maxOutputTokens,
+            jsonSchema: REVISION_RESPONSE_SCHEMA,
             metadata: {
                 inputChars: rawText.length,
                 inputTokens,

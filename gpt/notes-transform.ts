@@ -177,6 +177,30 @@ No commentary.
 No extra keys.
 Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
 
+const NOTES_SUMMARY_RESPONSE_SCHEMA = {
+    name: "notes_summary_response",
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+            summaryMarkdown: { type: "string" },
+        },
+        required: ["summaryMarkdown"],
+    },
+} as const;
+
+const NOTES_REORGANISE_RESPONSE_SCHEMA = {
+    name: "notes_reorganise_response",
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+            reorganisedMarkdown: { type: "string" },
+        },
+        required: ["reorganisedMarkdown"],
+    },
+} as const;
+
 function parseNotesTransformMarkdown(
     content: string,
     key: "summaryMarkdown" | "reorganisedMarkdown",
@@ -318,6 +342,7 @@ export async function generateNotesSummary(
                 current_visible_notes: notesMarkdown,
             }),
             maxOutputTokens,
+            jsonSchema: NOTES_SUMMARY_RESPONSE_SCHEMA,
             metadata: {
                 inputChars: notesMarkdown.length,
                 inputTokens,
@@ -412,6 +437,7 @@ export async function generateNotesReorganisation(
                 current_visible_notes: notesMarkdown,
             }),
             maxOutputTokens,
+            jsonSchema: NOTES_REORGANISE_RESPONSE_SCHEMA,
             metadata: {
                 inputChars: notesMarkdown.length,
                 inputTokens,

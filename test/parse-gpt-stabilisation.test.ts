@@ -59,6 +59,38 @@ function responsesJson(content: string, overrides: Record<string, unknown> = {})
     };
 }
 
+function provider400Error(): Error {
+    const err = new Error("Invalid parameter: text.format.type");
+    Object.assign(err, {
+        status: 400,
+        code: "invalid_request_error",
+        type: "invalid_request_error",
+        param: "text.format.type",
+        request_id: "req_safe123",
+    });
+    return err;
+}
+
+function expectJsonSchemaFormat(
+    request: { text?: { format?: Record<string, unknown> } },
+    name: string,
+    key: string
+) {
+    expect(request.text?.format).toMatchObject({
+        type: "json_schema",
+        name,
+        strict: true,
+    });
+    expect(request.text?.format?.schema).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+        required: [key],
+        properties: expect.objectContaining({
+            [key]: expect.any(Object),
+        }),
+    });
+}
+
 describe("parse-gpt stabilisation", () => {
     beforeEach(() => {
         openAiMock.chatCreate.mockReset();
@@ -99,7 +131,9 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
-        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expectJsonSchemaFormat(request, "forms_final_attributes_response", "finalAttributes");
+        expect(request.text.format.schema.properties.finalAttributes.properties).toHaveProperty("answer");
+        expect(request.text.format.schema.properties.finalAttributes.required).toEqual(["answer"]);
         expect(JSON.parse(request.input).full_transcript).toBe("yes");
     });
 
@@ -129,19 +163,39 @@ describe("parse-gpt stabilisation", () => {
 
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(4);
+
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
+        await expect(parseFinalAttributes(
+            transcript,
+            [{ block_name: "main", field_name: "answer" }],
+            candidates
+        )).resolves.toBe(candidates);
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(5);
     });
 
     it("returns raw Whisper text when revision model call throws", async () => {
         const raw = "This raw Whisper transcript should survive revision failure.";
-        const err = new Error("simulated provider failure");
-        (err as Error & { code?: string }).code = "ETIMEDOUT";
-        openAiMock.responsesCreate.mockRejectedValueOnce(err);
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
+        const providerLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-        await expect(reviseTranscription(raw)).resolves.toBe(raw);
-        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
-        expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe("gpt-5.4-mini");
-        expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "none" });
-        expect(openAiMock.responsesCreate.mock.calls[0][0].text).toEqual({ format: { type: "json_object" } });
+        try {
+            await expect(reviseTranscription(raw)).resolves.toBe(raw);
+            expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+            expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+            expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "none" });
+            expectJsonSchemaFormat(openAiMock.responsesCreate.mock.calls[0][0], "revision_response", "correctedText");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("Provider request failed");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("status: 400");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("providerCode: invalid_request_error");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("providerType: invalid_request_error");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("providerParam: text.format.type");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("requestId: req_safe123");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("textFormat: json_schema");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("schemaName: revision_response");
+            expect(providerLog.mock.calls[0]?.[0]).not.toContain(raw);
+        } finally {
+            providerLog.mockRestore();
+        }
     });
 
     it("uses Responses API for revision and returns corrected text on valid JSON", async () => {
@@ -157,7 +211,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4-mini");
         expect(request.reasoning).toEqual({ effort: "none" });
-        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expectJsonSchemaFormat(request, "revision_response", "correctedText");
         expect(request.max_output_tokens).toBeGreaterThan(0);
     });
 
@@ -268,7 +322,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
-        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expectJsonSchemaFormat(request, "notes_final_response", "notesMarkdown");
         expect(JSON.parse(request.input).current_notes).toBe("## Draft\n\n- Existing note.");
     });
 
@@ -299,6 +353,15 @@ describe("parse-gpt stabilisation", () => {
 
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(4);
+
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
+        await expect(finalizeNotes(
+            transcript,
+            currentNotes,
+            "meeting",
+            ["Summary"]
+        )).resolves.toBe(currentNotes);
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(5);
     });
 
     it("generates notes summaries with final-quality reasoning and required prompt constraints", async () => {
@@ -316,7 +379,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
-        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expectJsonSchemaFormat(request, "notes_summary_response", "summaryMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
         expect(request.instructions).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
         expect(request.instructions).toContain("If a question is answered elsewhere");
@@ -400,6 +463,18 @@ describe("parse-gpt stabilisation", () => {
         });
     });
 
+    it("maps transform provider 400s to safe transform errors", async () => {
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
+
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+            code: "transform-provider-error",
+            details: expect.objectContaining({
+                stage: "provider-error",
+            }),
+        });
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+    });
+
     it("generates notes reorganisations with required prompt constraints", async () => {
         const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
         openAiMock.responsesCreate.mockResolvedValueOnce(
@@ -417,7 +492,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
-        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expectJsonSchemaFormat(request, "notes_reorganise_response", "reorganisedMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
         expect(request.instructions).toContain("Do not output tables in v1.");
         expect(request.instructions).toContain("- No relevant notes captured.");

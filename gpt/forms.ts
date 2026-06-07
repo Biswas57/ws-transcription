@@ -88,6 +88,29 @@ function allowedKeySet(template: FieldDef[]): string[] {
     return template.map((f) => normalizeKey(f.field_name));
 }
 
+function finalAttributesResponseSchema(allowedKeys: string[]) {
+    const finalAttributeProperties = Object.fromEntries(
+        allowedKeys.map((key) => [key, { type: "string" }])
+    );
+
+    return {
+        name: "forms_final_attributes_response",
+        schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                finalAttributes: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: finalAttributeProperties,
+                    required: allowedKeys,
+                },
+            },
+            required: ["finalAttributes"],
+        },
+    } as const;
+}
+
 function isMeaningfulFormText(text: string): boolean {
     const trimmed = text.trim();
     return trimmed.length >= FORMS_MIN_TRANSCRIPT_CHARS && /[A-Za-z0-9$]/.test(trimmed);
@@ -198,6 +221,7 @@ export async function parseFinalAttributes(
                 full_transcript: truncated,
             }),
             maxOutputTokens,
+            jsonSchema: finalAttributesResponseSchema(allowed),
             metadata: {
                 transcriptChars: fullTranscript.length,
                 truncatedChars: truncated.length,
