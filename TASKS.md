@@ -31,6 +31,9 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-067 Tune Notes batching, revision gates, and live update cadence | Completed | Reduced transcription-overloaded risk by increasing Notes audio batch size over session age, slowing live Notes updates, reducing unnecessary revision GPT calls, raising the live patch output floor, and splitting final-quality reasoning from frequent live/revision calls. |
 | T-068 Harden Notes overload recovery support | Completed | Notes overload now pauses intake, sends one existing-shape `transcription-overloaded` error, keeps the socket open, and allows already accepted queued/in-flight work to continue while the socket remains open. |
 | T-069 Preserve Notes cap timer across quick reconnects | Completed | Backend cap registry reuses the original 60-minute Notes cap deadline for signed quick reconnects from the same authenticated user and closes the cap window on normal finalisation. |
+| T-075 Split GPT helpers and parsers out of parse-gpt.ts | Completed | Split GPT config, provider, JSON helpers, revision, Forms, Notes live/final, and Notes transform logic into `gpt/` modules while keeping `parse-gpt.ts` as the compatibility facade. |
+| T-076 Consolidate safe diagnostics and error helpers | Completed | Added shared content-safe diagnostics helpers for error metadata, JSON keys, token usage, safe values, numeric metadata, and short hashes; refactored low-risk call sites without changing runtime behaviour. |
+| T-077 Remove stale backend comments and legacy compatibility residue | Completed | Removed unused historical cache/cost files, stale Groq/parser references, unused legacy dependencies, and misleading comments without changing runtime behaviour or contracts. |
 
 ## Active
 

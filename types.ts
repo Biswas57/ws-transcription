@@ -64,13 +64,13 @@ export interface StartedMessage {
 
 export interface AttributesUpdateMessage {
     type: "attributes_update";
-    // TODO: Reintroduce corrected_audio only with frontend coordination.
+    // Contract note: corrected_audio is intentionally not sent by this backend.
     attributes: Record<string, string>;
 }
 
 export interface FinalAttributesMessage {
     type: "final_attributes";
-    // TODO: Reintroduce corrected_audio only with frontend coordination.
+    // Contract note: corrected_audio is intentionally not sent by this backend.
     attributes: Record<string, string>;
 }
 
@@ -151,6 +151,3 @@ export interface NotesState extends CommonAudioState {
     sections: string[];
     currentMarkdown: string;
 }
-
-// ─── Legacy WSState alias ────────────────────────────────────────────────────
-export type WSState = FormFillState;

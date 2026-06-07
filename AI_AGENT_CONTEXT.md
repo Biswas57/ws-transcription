@@ -32,12 +32,11 @@ The main Formify web app is separate from this repo. This server expects the web
 - `handlers/FormFillHandler.ts`: `forms` mode implementation; buffers audio, transcribes, revises, extracts fields, sends incremental/final attributes.
 - `handlers/NotesHandler.ts`: `notes` mode implementation; buffers audio, transcribes, revises, updates Markdown notes, sends incremental/final notes.
 - `transcription.ts`: WebM validation/header handling, Whisper API call, transcript overlap merge.
-- `parse-gpt.ts`: OpenAI GPT prompts and calls for transcript revision, field extraction, final verification, note generation.
+- `parse-gpt.ts`: compatibility facade that re-exports GPT helpers for existing handlers/routes/tests.
+- `gpt/`: OpenAI GPT config, provider helpers, JSON helpers, transcript revision, Forms extraction/final parsing, Notes live/final generation, and Notes transform logic.
 - `ws-token.ts`: JWT mint/verify helpers for WebSocket session tokens.
-- `parse-groq.ts`: older Groq-based parser path if present in the working tree; not used by the active handlers.
 - `load/`: WebSocket load-test harness.
 - `test/`: local WebSocket test clients and focused backend tests.
-- `unused/`: currently untracked/unused modules moved out of active compilation.
 
 ## Commands
 
@@ -96,7 +95,6 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `WS_TOKEN_SECRET`: required by both the web app token minting path and this WebSocket server.
 - `ALLOWED_ORIGIN`: optional exact origin allowlist for WebSocket connections.
 - `WS_URL`: optional local test/load client target URL.
-- `GROQ_API_KEY`: only relevant to the older Groq parser path if that legacy file is present.
 - `VAD_MODE`: optional Notes VAD mode, one of `off`, `dry-run`, or `gate`; default is `off`.
 - `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
 - `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
@@ -321,7 +319,6 @@ Safe logs include counts, lengths, timings, mode, booleans, safe error names/cod
 - Preserve ESM-compatible imports for built output.
 - Keep pnpm as the package manager; do not reintroduce `package-lock.json`.
 - Prefer small, typed protocol changes in `types.ts` before changing runtime payloads.
-- Do not wire unused cache/cost modules back in without a specific design.
 - Run `pnpm build` after TypeScript changes.
 - Do not add Stripe, Pro tiers, subscriptions, upgrade paths, premium gates, pricing logic, or paywalls. Backend controls are allowed only for reliability, fair-use, cost-safety, and abuse prevention.
 - Do not start HTTP notes transform endpoints unless explicitly requested.
@@ -332,8 +329,6 @@ Safe logs include counts, lengths, timings, mode, booleans, safe error names/cod
 - Verify `NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT` with production/beta `truncated: true` logs and dense long-session simulations before changing it.
 - Handler queues are intentionally concurrency `1`; increasing concurrency can corrupt transcript, attributes, or notes ordering unless sequence guards are added.
 - `corrected_audio` is not currently sent in form update/final messages. Reintroducing it needs frontend coordination.
-- The older Groq parser path is not active and may be absent or drift from the active OpenAI implementation.
-- `unused/` contains non-active modules and should not be assumed part of the runtime.
 
 ## Ticket Source Of Truth
 

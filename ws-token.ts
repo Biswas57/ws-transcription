@@ -7,14 +7,15 @@
  *   1. Frontend calls tRPC `transcription.getSessionToken` (protectedProcedure)
  *   2. Server mints a JWT signed with WS_TOKEN_SECRET, embedding userId + mode
  *   3. Frontend sends { action: "start", ..., token: "<jwt>" } as first WS message
- *   4. WS server verifies the token, extracts userId, enforces usage limits
- *   5. On success: increments usage and proceeds; on failure: sends error + closes
+ *   4. WS server verifies the token, extracts userId/mode, and reads signed metadata
+ *      such as recordingSessionId for Notes cap continuity.
+ *   5. On success, the session starts; on failure, the server sends error + closes.
  *
  * The secret (WS_TOKEN_SECRET) must be set in both:
  *   - Next.js env  (.env / Vercel env vars)
  *   - WS server env (.env in ws-transcription/)
  *
- * Tokens expire in 2 minutes — enough for page load → connect → start,
+ * Tokens expire in 2 minutes — enough for page load -> connect -> start,
  * but short enough to be useless if leaked.
  */
 
