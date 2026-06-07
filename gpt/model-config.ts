@@ -29,6 +29,12 @@ export const NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT = 80000;
 // Final notes are roughly the size of the notes document, not the transcript, so
 // cap the requested output regardless of how large the input transcript grows.
 export const NOTES_FINAL_MAX_OUTPUT_TOKENS = 16000;
+export const NOTES_FINAL_OUTPUT_TOKEN_MULTIPLIER = 1.8;
+export const NOTES_FINAL_MIN_OUTPUT_TOKENS = 2048;
+export const NOTES_TRANSFORM_MIN_OUTPUT_TOKENS = 1536;
+export const NOTES_TRANSFORM_OUTPUT_TOKEN_PADDING = 768;
+export const NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER = 1.1;
+export const NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER = 1.4;
 
 // The bundled tiktoken version in this repo does not recognize GPT-5.5 aliases yet.
 const tokenCounter = get_encoding("o200k_base");
@@ -51,6 +57,19 @@ export function truncateTranscriptPreservingEdges(text: string, maxChars: number
 export function notesTransformOutputBudget(inputTokens: number, multiplier: number): number {
     return Math.min(
         NOTES_FINAL_MAX_OUTPUT_TOKENS,
-        Math.max(1024, Math.ceil(inputTokens * multiplier) + 512)
+        Math.max(
+            NOTES_TRANSFORM_MIN_OUTPUT_TOKENS,
+            Math.ceil(inputTokens * multiplier) + NOTES_TRANSFORM_OUTPUT_TOKEN_PADDING
+        )
+    );
+}
+
+export function notesFinalOutputBudget(inputTokens: number): number {
+    return Math.min(
+        NOTES_FINAL_MAX_OUTPUT_TOKENS,
+        Math.max(
+            NOTES_FINAL_MIN_OUTPUT_TOKENS,
+            Math.ceil(inputTokens * NOTES_FINAL_OUTPUT_TOKEN_MULTIPLIER)
+        )
     );
 }

@@ -1,6 +1,8 @@
 import {
     GPT_FINAL_MODEL,
     GPT_FINAL_REASONING_EFFORT,
+    NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER,
+    NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER,
     countTokens,
     notesTransformOutputBudget,
 } from "./model-config.js";
@@ -329,7 +331,7 @@ export async function generateNotesSummary(
     const transformStart = Date.now();
     const notesMarkdown = args.notesMarkdown.trim();
     const inputTokens = countTokens(notesMarkdown);
-    const maxOutputTokens = notesTransformOutputBudget(inputTokens, 0.8);
+    const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER);
 
     try {
         const response = await runOpenAIResponsesJson({
@@ -423,7 +425,7 @@ export async function generateNotesReorganisation(
     const notesMarkdown = args.notesMarkdown.trim();
     const targetSections = args.targetSections ?? [];
     const inputTokens = countTokens(notesMarkdown);
-    const maxOutputTokens = notesTransformOutputBudget(inputTokens, 1.1);
+    const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER);
 
     try {
         const response = await runOpenAIResponsesJson({

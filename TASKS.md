@@ -34,6 +34,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-075 Split GPT helpers and parsers out of parse-gpt.ts | Completed | Split GPT config, provider, JSON helpers, revision, Forms, Notes live/final, and Notes transform logic into `gpt/` modules while keeping `parse-gpt.ts` as the compatibility facade. |
 | T-076 Consolidate safe diagnostics and error helpers | Completed | Added shared content-safe diagnostics helpers for error metadata, JSON keys, token usage, safe values, numeric metadata, and short hashes; refactored low-risk call sites without changing runtime behaviour. |
 | T-077 Remove stale backend comments and legacy compatibility residue | Completed | Removed unused historical cache/cost files, stale Groq/parser references, unused legacy dependencies, and misleading comments without changing runtime behaviour or contracts. |
+| T-081 Tune Responses output budgets for Notes final and transforms | Completed | Increased Notes final, Summarise, and Reorganise Responses output-budget headroom so medium reasoning is less likely to consume the whole visible-output budget and trigger `max_output_tokens` incompletes. Contracts, prompts, fallback behaviour, and safe diagnostics are unchanged. |
 
 ## Active
 

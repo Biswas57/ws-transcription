@@ -322,6 +322,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.max_output_tokens).toBe(2048);
         expectJsonSchemaFormat(request, "notes_final_response", "notesMarkdown");
         expect(JSON.parse(request.input).current_notes).toBe("## Draft\n\n- Existing note.");
     });
@@ -379,6 +380,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.max_output_tokens).toBeGreaterThan(2532);
         expectJsonSchemaFormat(request, "notes_summary_response", "summaryMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
         expect(request.instructions).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
@@ -492,6 +494,7 @@ describe("parse-gpt stabilisation", () => {
         const request = openAiMock.responsesCreate.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.max_output_tokens).toBeGreaterThan(3289);
         expectJsonSchemaFormat(request, "notes_reorganise_response", "reorganisedMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
         expect(request.instructions).toContain("Do not output tables in v1.");

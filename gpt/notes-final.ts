@@ -1,9 +1,9 @@
 import {
     GPT_FINAL_MODEL,
     GPT_FINAL_REASONING_EFFORT,
-    NOTES_FINAL_MAX_OUTPUT_TOKENS,
     NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT,
     countTokens,
+    notesFinalOutputBudget,
     truncateTranscriptPreservingEdges,
 } from "./model-config.js";
 import { extractJsonObjectText } from "./json-parsing.js";
@@ -120,12 +120,7 @@ export async function finalizeNotes(
     const truncated = truncateTranscriptPreservingEdges(fullTranscript, NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT);
     const wasTruncated = fullTranscript.length > NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT;
     const inputTokens = countTokens(truncated) + countTokens(currentNotes);
-    // Output ≈ notes size, so cap it; without a ceiling a large transcript would
-    // request a wastefully large (and possibly out-of-range) completion budget.
-    const maxOutputTokens = Math.min(
-        Math.max(1024, Math.ceil(inputTokens * 1.2)),
-        NOTES_FINAL_MAX_OUTPUT_TOKENS
-    );
+    const maxOutputTokens = notesFinalOutputBudget(inputTokens);
     console.log(
         `[notes-final] Context — ` +
         `model: ${GPT_FINAL_MODEL}, ` +
