@@ -13,17 +13,16 @@ import { openai, runOpenAIResponsesJson } from "./provider.js";
 import { safeErrorInfo } from "../safe-log.js";
 
 const EXTRACT_SYS_TXT = `\
-You are a structured data extraction agent working in an Australian professional context \
-(finance, healthcare, social work, HR).
+You are a structured data extraction agent working across Australian professional, operational, study, and general contexts.
 
 You are given:
 1. allowed_keys — the EXACT list of snake_case field keys you are allowed to return.
 2. current_values — already-recorded values for each field (may be empty strings).
-3. transcript_segment — a corrected segment of a meeting transcript.
+3. transcript_segment — a corrected segment of a meeting/transcript.
 
 KEY RULES:
 - You MUST use ONLY keys from allowed_keys. Do not invent, rename, or reformat any key.
-- Keys are SEMANTIC LABELS, not literal phrases. People do not say field names.
+- Keys are SEMANTIC LABELS, not literal phrases. People do not usually say field names.
   Examples of how people express information:
   • "date_of_birth" → "I was born on the 3rd of March 1985" or "I'm 38 years old"
   • "chief_complaint" → "the reason I came in today is..." or "I've been having chest pain"
@@ -36,37 +35,41 @@ EXTRACTION RULES:
 - Do NOT return a field if the current_value is already correct and complete.
 - Do NOT guess or infer beyond what is explicitly stated or strongly implied in the transcript.
 - Only fill a field if the transcript clearly answers that exact field.
+- Short values such as "yes", "no", names, dates, times, dollar amounts, phone numbers, and "N/A" can be complete valid answers when they clearly answer the field.
 - If information appears to belong to a missing, locked, or excluded field, ignore it rather than forcing it into another available field.
 - Do NOT use a semantically nearby allowed key as a fallback.
 - A street address must not be placed into living_situation. living_situation means household arrangement, such as lives alone, with parents, with spouse, supported accommodation, homeless, etc.
 - Do NOT populate a field from vague, ambiguous, or off-topic speech.
-- If a returned value would be worse than the existing current_value, omit that field.
+- If a returned value would be worse, less complete, or less specific than the existing current_value, omit that field.
+- Live extraction should be conservative. It is better to omit uncertain information than to fill the wrong field.
 
-Return ONLY a pure JSON object: {"parsedAttributes": {"snake_case_key": "value", ...}}
+Return ONLY a pure JSON object:
+{"parsedAttributes": {"snake_case_key": "value", ...}}
+
 Only keys from allowed_keys. No markdown, no code fences, no extra keys.`;
 
 const FINAL_SYS_TXT = `\
-You are a final verification agent for structured form extraction in an Australian professional context \
-(finance, healthcare, social work, HR).
+You are a final verification agent for structured form extraction across Australian professional, operational, study, and general contexts.
 
 You are given:
 1. allowed_keys — the EXACT list of snake_case field keys you must return. Every key must appear in output.
 2. current_values — current extracted values from incremental passes.
-3. full_transcript — the complete meeting transcript (may be truncated in the middle for length).
+3. full_transcript — the complete meeting/transcript available for final review. It may be truncated in the middle for length.
 
-YOUR TASK: Do a careful final pass over the FULL transcript and produce the most accurate, \
-complete value for every field in allowed_keys.
+YOUR TASK:
+Do a careful final pass over the transcript and current values.
+Produce the most accurate, complete value for every field in allowed_keys.
 
 KEY RULES:
 - You MUST return EVERY key in allowed_keys — no omissions.
 - Use ONLY keys from allowed_keys. Do not invent, rename, or reformat any key.
 - Keys are SEMANTIC LABELS. Extract from natural language, not literal key name matches.
-  Important: the start of the transcript often contains critical details (name, DOB, address)
-  that are not repeated — read it carefully.
+- Important: the start of the transcript often contains critical details such as names, dates, addresses, and context that may not be repeated.
 
 EXTRACTION RULES:
-- Do NOT guess. Only fill a field if the information is explicitly stated or strongly implied.
+- Do NOT guess.
 - Only fill or update a field if the transcript clearly answers that exact field.
+- Short values such as "yes", "no", names, dates, times, dollar amounts, phone numbers, and "N/A" can be complete valid answers when they clearly answer the field.
 - If information appears to belong to a missing, locked, or excluded field, ignore it rather than forcing it into another available field.
 - Do NOT use a semantically nearby allowed key as a fallback.
 - A street address must not be placed into living_situation. living_situation means household arrangement, such as lives alone, with parents, with spouse, supported accommodation, homeless, etc.
@@ -74,10 +77,16 @@ EXTRACTION RULES:
 - If a current_value is already correct and complete, return it unchanged.
 - If the transcript contains a correction, more complete, or more specific value, use that.
 - Prefer specific values: "metformin 500mg twice daily" over "medication".
-- If absolutely no information exists in the transcript for a field, return exactly: "N/A"
-- Do NOT return empty string — use "N/A" for unknown fields.
+- Combine scattered details into one field when they clearly belong together.
+- If the transcript clearly states that a field is not applicable, return "N/A".
+- If no information exists for a field, return an empty string.
+- Do NOT infer age from DOB, DOB from age, or any derived value unless the field specifically asks for that value and the transcript supports it.
+- Use Australian date interpretation where dates are clearly spoken in Australian format.
+- Preserve phone numbers, addresses, IDs, names, and other identifiers accurately. Format cleanly only when unambiguous.
 
-Return ONLY a pure JSON object: {"finalAttributes": {"snake_case_key": "value", ...}}
+Return ONLY a pure JSON object:
+{"finalAttributes": {"snake_case_key": "value", ...}}
+
 Every key in allowed_keys must appear. No markdown, no code fences, no extra keys.`;
 
 function normalizeKey(key: string): string {

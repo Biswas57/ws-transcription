@@ -91,6 +91,12 @@ function expectJsonSchemaFormat(
     });
 }
 
+function expectNoPromptExcludedLanguage(instructions: string) {
+    expect(instructions).not.toMatch(/\bmarkdown tables?\b/i);
+    expect(instructions).not.toMatch(/\btables?\b/i);
+    expect(instructions).not.toMatch(/\b(sponsors?|promos?|promotions?)\b/i);
+}
+
 describe("parse-gpt stabilisation", () => {
     beforeEach(() => {
         openAiMock.chatCreate.mockReset();
@@ -112,6 +118,9 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
         expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
+        const instructions = openAiMock.create.mock.calls[0][0].messages[0].content;
+        expect(instructions).toContain("Short values such as \"yes\", \"no\", names, dates, times, dollar amounts, phone numbers, and \"N/A\" can be complete valid answers");
+        expectNoPromptExcludedLanguage(instructions);
     });
 
     it("runs final extraction for one-word Forms values", async () => {
@@ -134,6 +143,10 @@ describe("parse-gpt stabilisation", () => {
         expectJsonSchemaFormat(request, "forms_final_attributes_response", "finalAttributes");
         expect(request.text.format.schema.properties.finalAttributes.properties).toHaveProperty("answer");
         expect(request.text.format.schema.properties.finalAttributes.required).toEqual(["answer"]);
+        expect(request.instructions).toContain("Short values such as \"yes\", \"no\", names, dates, times, dollar amounts, phone numbers, and \"N/A\" can be complete valid answers");
+        expect(request.instructions).toContain("If the transcript clearly states that a field is not applicable, return \"N/A\".");
+        expect(request.instructions).toContain("If no information exists for a field, return an empty string.");
+        expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).full_transcript).toBe("yes");
     });
 
@@ -212,6 +225,8 @@ describe("parse-gpt stabilisation", () => {
         expect(request.model).toBe("gpt-5.4-mini");
         expect(request.reasoning).toEqual({ effort: "none" });
         expectJsonSchemaFormat(request, "revision_response", "correctedText");
+        expect(request.instructions).toContain("If unsure, preserve the original wording.");
+        expectNoPromptExcludedLanguage(request.instructions);
         expect(request.max_output_tokens).toBeGreaterThan(0);
     });
 
@@ -289,6 +304,12 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
         expect(openAiMock.create.mock.calls[0][0].max_completion_tokens).toBe(1024);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
+        const instructions = openAiMock.create.mock.calls[0][0].messages[0].content;
+        expect(instructions).toContain("Create useful structure once enough signal exists");
+        expect(instructions).toContain("fallbackAppendMarkdown with a concise new ## heading");
+        expect(instructions).toContain("Do not create a # document title in live updates.");
+        expect(instructions).not.toMatch(/fallback.*bullet-only/i);
+        expectNoPromptExcludedLanguage(instructions);
     });
 
     it("keeps current notes unchanged when notes incremental patch JSON is invalid", async () => {
@@ -324,6 +345,11 @@ describe("parse-gpt stabilisation", () => {
         expect(request.reasoning).toEqual({ effort: "medium" });
         expect(request.max_output_tokens).toBe(2048);
         expectJsonSchemaFormat(request, "notes_final_response", "notesMarkdown");
+        expect(request.instructions).toContain("Treat current_notes as the canonical draft");
+        expect(request.instructions).toContain("Manual edits are not separately marked as immutable");
+        expect(request.instructions).toContain("Do not keep a \"Live updates\" section in the final notes.");
+        expect(request.instructions).toContain("- No relevant notes captured.");
+        expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).current_notes).toBe("## Draft\n\n- Existing note.");
     });
 
@@ -383,9 +409,11 @@ describe("parse-gpt stabilisation", () => {
         expect(request.max_output_tokens).toBeGreaterThan(2532);
         expectJsonSchemaFormat(request, "notes_summary_response", "summaryMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
-        expect(request.instructions).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
-        expect(request.instructions).toContain("If a question is answered elsewhere");
+        expect(request.instructions).toContain("Do not add a Quick Checklist unless explicitly requested in the notes.");
+        expect(request.instructions).toContain("Compression should be adaptive");
+        expect(request.instructions).toContain("If a question is answered elsewhere in current_visible_notes");
         expect(request.instructions).toContain("Preserve existing structure where possible.");
+        expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).current_visible_notes).toBe(LONG_NOTES);
     });
 
@@ -497,9 +525,10 @@ describe("parse-gpt stabilisation", () => {
         expect(request.max_output_tokens).toBeGreaterThan(3289);
         expectJsonSchemaFormat(request, "notes_reorganise_response", "reorganisedMarkdown");
         expect(request.instructions).toContain("Transform current visible notes only.");
-        expect(request.instructions).toContain("Do not output tables in v1.");
+        expect(request.instructions).toContain("Preserve more useful detail and examples than Summarise would.");
         expect(request.instructions).toContain("- No relevant notes captured.");
         expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
+        expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).target_sections).toEqual(["Concepts", "Actions"]);
     });
 
