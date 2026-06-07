@@ -666,6 +666,10 @@ function extractJsonObjectText(content: string): string {
     return fenced ? fenced[1].trim() : trimmed;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 function looksLikeTransformErrorOutput(markdown: string): boolean {
     const firstLine = markdown.trim().split(/\r?\n/, 1)[0]?.trim().toLowerCase() ?? "";
     return /^(error|sorry|unable to|i cannot|i can't|as an ai)\b/.test(firstLine);
@@ -941,29 +945,44 @@ export async function parseFinalAttributes(
     const maxOutputTokens = Math.max(1024, template.length * 80);
 
     try {
-        const completion = await openai.chat.completions.create({
+        const response = await runOpenAIResponsesJson({
+            label: "forms-final",
             model: GPT_FINAL_MODEL,
-            messages: [
-                { role: "system", content: FINAL_SYS_TXT },
-                {
-                    role: "user",
-                    content: JSON.stringify({
-                        allowed_keys: allowed,
-                        current_values: normalizedCandidates,
-                        full_transcript: truncated,
-                    }),
-                },
-            ],
-            response_format: { type: "json_object" },
-            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
-            max_completion_tokens: maxOutputTokens,
-        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: FINAL_SYS_TXT,
+            input: JSON.stringify({
+                allowed_keys: allowed,
+                current_values: normalizedCandidates,
+                full_transcript: truncated,
+            }),
+            maxOutputTokens,
+            metadata: {
+                transcriptChars: fullTranscript.length,
+                truncatedChars: truncated.length,
+                templateFields: template.length,
+            },
+        });
 
-        const content = completion.choices?.[0]?.message?.content;
+        if (response.status === "incomplete") {
+            console.warn(
+                `[final] Incomplete response, returning candidates — ` +
+                `transcriptChars: ${fullTranscript.length}, ` +
+                `outputChars: ${response.outputText.length}, ` +
+                `reason: ${response.incompleteReason ?? "unknown"}, ` +
+                `duration: ${response.durationMs}ms`
+            );
+            return candidateAttributes;
+        }
+
+        const content = response.outputText;
         if (!content) { console.warn("[final] Empty response, returning candidates"); return candidateAttributes; }
 
-        const parsed = JSON.parse(content) as { finalAttributes?: Record<string, string> };
-        const raw = parsed.finalAttributes ?? {};
+        const parsed = JSON.parse(extractJsonObjectText(content)) as { finalAttributes?: unknown };
+        if (!isRecord(parsed.finalAttributes)) {
+            console.warn("[final] Missing finalAttributes key, returning candidates");
+            return candidateAttributes;
+        }
+        const raw = parsed.finalAttributes;
         const merged = { ...normalizedCandidates };
         let updatedCount = 0;
 
@@ -973,7 +992,7 @@ export async function parseFinalAttributes(
                 console.warn(`[final] Dropping unknown key — rawKeyChars: ${rawKey.length}, normalizedKeyChars: ${key.length}`);
                 continue;
             }
-            if (value && value !== "N/A" && value.trim() !== "") {
+            if (typeof value === "string" && value && value !== "N/A" && value.trim() !== "") {
                 if (merged[key] !== value) { merged[key] = value; updatedCount++; }
             }
         }
@@ -1302,32 +1321,44 @@ export async function finalizeNotes(
     );
 
     try {
-        const completion = await openai.chat.completions.create({
+        const response = await runOpenAIResponsesJson({
+            label: "notes-final",
             model: GPT_FINAL_MODEL,
-            messages: [
-                { role: "system", content: NOTES_FINAL_SYS_TXT },
-                {
-                    role: "user",
-                    content: JSON.stringify({
-                        note_style: noteStyle,
-                        sections: sections.length > 0 ? sections : undefined,
-                        current_notes: currentNotes,
-                        available_transcript: truncated,
-                    }),
-                },
-            ],
-            response_format: { type: "json_object" },
-            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
-            max_completion_tokens: maxOutputTokens,
-        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: NOTES_FINAL_SYS_TXT,
+            input: JSON.stringify({
+                note_style: noteStyle,
+                sections: sections.length > 0 ? sections : undefined,
+                current_notes: currentNotes,
+                available_transcript: truncated,
+            }),
+            maxOutputTokens,
+            metadata: {
+                transcriptChars: fullTranscript.length,
+                truncatedChars: truncated.length,
+                currentNotesChars: currentNotes.length,
+                sectionsCount: sections.length,
+                truncated: wasTruncated,
+            },
+        });
 
-        const content = completion.choices?.[0]?.message?.content;
+        if (response.status === "incomplete") {
+            console.warn(
+                `[notes-final] Incomplete response, returning current notes — ` +
+                `outputChars: ${response.outputText.length}, ` +
+                `reason: ${response.incompleteReason ?? "unknown"}, ` +
+                `duration: ${response.durationMs}ms`
+            );
+            return currentNotes;
+        }
+
+        const content = response.outputText;
         if (!content) {
             console.warn("[notes-final] Empty response, returning current notes");
             return currentNotes;
         }
 
-        const parsed = JSON.parse(content) as { notesMarkdown?: string };
+        const parsed = JSON.parse(extractJsonObjectText(content)) as { notesMarkdown?: string };
         const finalized = parsed.notesMarkdown?.trim();
         if (!finalized) {
             console.warn("[notes-final] Missing notesMarkdown key, returning current");

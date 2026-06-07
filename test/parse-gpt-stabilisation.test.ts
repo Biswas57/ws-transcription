@@ -83,9 +83,9 @@ describe("parse-gpt stabilisation", () => {
     });
 
     it("runs final extraction for one-word Forms values", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ finalAttributes: { answer: "yes" } }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ finalAttributes: { answer: "yes" } }))
+        );
 
         const result = await parseFinalAttributes(
             "yes",
@@ -94,9 +94,41 @@ describe("parse-gpt stabilisation", () => {
         );
 
         expect(result).toEqual({ answer: "yes" });
-        expect(openAiMock.create).toHaveBeenCalledTimes(1);
-        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4");
-        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
+        expect(request.model).toBe("gpt-5.4");
+        expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expect(JSON.parse(request.input).full_transcript).toBe("yes");
+    });
+
+    it("returns candidate attributes for incomplete, empty, invalid, and missing-key final extraction output", async () => {
+        const transcript = "The answer is yes and the follow-up is tomorrow.";
+        const candidates = { answer: "maybe" };
+
+        for (const response of [
+            responsesJson(
+                JSON.stringify({ finalAttributes: { answer: "yes" } }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            ),
+            responsesJson(""),
+            responsesJson("not json"),
+            responsesJson(JSON.stringify({ wrongKey: { answer: "yes" } })),
+        ]) {
+            openAiMock.responsesCreate.mockResolvedValueOnce(response);
+            await expect(parseFinalAttributes(
+                transcript,
+                [{ block_name: "main", field_name: "answer" }],
+                candidates
+            )).resolves.toBe(candidates);
+        }
+
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(4);
     });
 
     it("returns raw Whisper text when revision model call throws", async () => {
@@ -220,9 +252,9 @@ describe("parse-gpt stabilisation", () => {
     });
 
     it("uses final reasoning effort for Notes finalisation", async () => {
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: JSON.stringify({ notesMarkdown: "## Summary\n\n- Final note." }) } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ notesMarkdown: "## Summary\n\n- Final note." }))
+        );
 
         const result = await finalizeNotes(
             "This is a sufficiently detailed transcript for the final notes pass.",
@@ -232,8 +264,41 @@ describe("parse-gpt stabilisation", () => {
         );
 
         expect(result).toBe("## Summary\n\n- Final note.");
-        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4");
-        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
+        expect(request.model).toBe("gpt-5.4");
+        expect(request.reasoning).toEqual({ effort: "medium" });
+        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expect(JSON.parse(request.input).current_notes).toBe("## Draft\n\n- Existing note.");
+    });
+
+    it("returns current notes for incomplete, empty, invalid, and missing-key Notes final output", async () => {
+        const transcript = "This is a sufficiently detailed transcript for the final notes pass.";
+        const currentNotes = "## Draft\n\n- Existing note.";
+
+        for (const response of [
+            responsesJson(
+                JSON.stringify({ notesMarkdown: "## Partial" }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            ),
+            responsesJson(""),
+            responsesJson("not json"),
+            responsesJson(JSON.stringify({ wrongKey: "## Missing" })),
+        ]) {
+            openAiMock.responsesCreate.mockResolvedValueOnce(response);
+            await expect(finalizeNotes(
+                transcript,
+                currentNotes,
+                "meeting",
+                ["Summary"]
+            )).resolves.toBe(currentNotes);
+        }
+
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(4);
     });
 
     it("generates notes summaries with final-quality reasoning and required prompt constraints", async () => {
