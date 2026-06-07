@@ -8,9 +8,9 @@ dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
-const GPT_FULL_MODEL = "gpt-5.5";
+const GPT_FULL_MODEL = "gpt-5.4";
 const GPT_REASONING_EFFORT = "low" as const;
-const FINAL_GPT_REASONING_EFFORT = "high" as const;
+const FINAL_GPT_REASONING_EFFORT = "medium" as const;
 const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
 const DEFAULT_REVISION_MIN_CHARS = 15;
 const NOTES_REVISION_MIN_CHARS = 40;

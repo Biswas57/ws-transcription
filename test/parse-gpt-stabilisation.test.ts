@@ -67,7 +67,7 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ answer: "yes" });
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
-        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("high");
+        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
     });
 
     it("returns raw Whisper text when revision model call throws", async () => {
@@ -156,7 +156,7 @@ describe("parse-gpt stabilisation", () => {
         );
 
         expect(result).toBe("## Summary\n\n- Final note.");
-        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("high");
+        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
     });
 
     it("generates notes summaries with final-quality reasoning and required prompt constraints", async () => {
@@ -172,7 +172,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toEqual({ summaryMarkdown: "## Summary\n\n- Condensed note." });
         const request = openAiMock.create.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.5");
-        expect(request.reasoning_effort).toBe("high");
+        expect(request.reasoning_effort).toBe("medium");
         expect(request.response_format).toEqual({ type: "json_object" });
         expect(request.messages[0].content).toContain("Transform current visible notes only.");
         expect(request.messages[0].content).toContain("Do not add a \"Quick Checklist\" unless explicitly requested in the notes.");
@@ -256,7 +256,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toEqual({ reorganisedMarkdown: reorganised });
         const request = openAiMock.create.mock.calls[0][0];
         expect(request.model).toBe("gpt-5.5");
-        expect(request.reasoning_effort).toBe("high");
+        expect(request.reasoning_effort).toBe("medium");
         expect(request.response_format).toEqual({ type: "json_object" });
         expect(request.messages[0].content).toContain("Transform current visible notes only.");
         expect(request.messages[0].content).toContain("Do not output tables in v1.");
