@@ -1,0 +1,498 @@
+import {
+    GPT_FINAL_MODEL,
+    GPT_FINAL_REASONING_EFFORT,
+    countTokens,
+    notesTransformOutputBudget,
+} from "./model-config.js";
+import { extractJsonObjectText } from "./json-parsing.js";
+import { runOpenAIResponsesJson } from "./provider.js";
+import {
+    formatSafeJsonKeys,
+    safeErrorInfo,
+    safeJsonKeys,
+    safeLogValue,
+} from "../safe-log.js";
+
+export type GenerateNotesSummaryArgs = {
+    notesMarkdown: string;
+    noteStyle?: string;
+};
+
+export type GenerateNotesReorganisationArgs = {
+    notesMarkdown: string;
+    noteStyle?: string;
+    targetSections?: string[];
+};
+
+export type NotesTransformErrorCode =
+    | "transform-failed"
+    | "transform-output-invalid-json"
+    | "transform-output-missing-key"
+    | "transform-output-empty"
+    | "transform-output-error-like"
+    | "transform-output-incomplete"
+    | "transform-provider-error"
+    | "reorganise-output-too-short";
+
+export type NotesTransformErrorDetails = {
+    stage?: string;
+    outputChars?: number;
+    jsonKeys?: string[];
+    expectedKey?: string;
+    usedAliasKey?: string;
+    incompleteReason?: string;
+};
+
+export class NotesTransformError extends Error {
+    constructor(
+        readonly code: NotesTransformErrorCode,
+        message: string,
+        readonly details: NotesTransformErrorDetails = {}
+    ) {
+        super(message);
+        this.name = "NotesTransformError";
+    }
+}
+
+export function isNotesTransformError(err: unknown): err is NotesTransformError {
+    return err instanceof NotesTransformError;
+}
+
+const NOTES_SUMMARISE_SYS_TXT = `\
+You are a professional notes transformation editor in an Australian context
+(clinical, meetings, social work, HR, technical support, process training, study, and general notes).
+
+You are given:
+1. note_style - the style/context of notes (clinical, meeting, study, general, or similar)
+2. current_visible_notes - the current visible notes markdown supplied by the app
+
+YOUR TASK:
+Transform current visible notes only.
+Make the notes shorter, cleaner, and easier to review while mostly preserving the existing structure.
+
+SOURCE-OF-TRUTH RULES:
+- Use only current_visible_notes.
+- Do not use audio, raw transcript, hidden prior notes, backend session state, database state, or outside knowledge.
+- Do not invent information.
+
+SUMMARISE REQUIREMENTS:
+- Preserve existing structure where possible.
+- Do not reorganise into a new structure unless the existing structure is clearly weak or duplicated.
+- Dedupe repeated notes.
+- Compress overexplained concepts.
+- Clean phrasing.
+- Keep already clear and concise sections mostly unchanged.
+- Merge only extremely weak, duplicated, or clearly overlapping headings.
+- Preserve important facts, definitions, actions, caveats, risks, dates, commands, IDs, technical terms, product names, names, and relevant examples.
+- Shorten long examples to key points, but do not remove relevant examples entirely.
+- Remove irrelevant examples and obvious clutter.
+- Keep useful unresolved questions under "Open Questions / Verify".
+- If a question is answered elsewhere, integrate the answer into the relevant section and do not keep it as open.
+- Omit "Open Questions / Verify" if nothing unresolved remains.
+- Do not add a "Quick Checklist" unless explicitly requested in the notes.
+- Do not blindly shorten notes; target roughly 60% of the original only where compression is actually useful.
+- If the notes are already concise and cohesive, make minimal changes.
+
+MARKDOWN REQUIREMENTS:
+- Use # for document title when appropriate.
+- Use ## for major sections.
+- Use ### for subtopics.
+- Use bullets for most notes.
+- Use ordered lists only for genuine ordered lists or process steps.
+- Avoid markdown tables in v1.
+- Preserve technical acronyms, commands, IDs, dates, names, and product terms.
+
+OUTPUT FORMAT:
+Return only valid JSON:
+{"summaryMarkdown":"<summarised notes markdown>"}
+
+No markdown fences.
+No commentary.
+No extra keys.
+Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
+
+const NOTES_REORGANISE_SYS_TXT = `\
+You are a professional notes transformation editor in an Australian context
+(clinical, meetings, social work, HR, technical support, process training, study, and general notes).
+
+You are given:
+1. note_style - the style/context of notes (clinical, meeting, study, general, or similar)
+2. target_sections - optional user-requested target sections
+3. current_visible_notes - the current visible notes markdown supplied by the app
+
+YOUR TASK:
+Transform current visible notes only.
+Reorganise content into clearer sections and topics while preserving roughly the same useful detail.
+
+SOURCE-OF-TRUTH RULES:
+- Use only current_visible_notes.
+- Do not use audio, raw transcript, hidden prior notes, backend session state, database state, or outside knowledge.
+- Do not invent content.
+
+REORGANISE REQUIREMENTS:
+- Preserve roughly 90-100% of useful detail.
+- Reorganise content into clearer sections and topics.
+- Use provided target sections when supplied.
+- If no target sections are supplied, infer a clean structure.
+- Requested sections are the priority over existing headings.
+- Preserve requested section wording where possible.
+- Each requested section should appear as a ## heading.
+- Use ### for inferred subtopics.
+- If a requested section has no relevant content, output this exact style:
+
+## Requested Section
+
+- No relevant notes captured.
+
+- Extra sections are allowed only when important content does not fit requested sections.
+- Preserve relevant examples and move them under the right concept.
+- Slightly compress long useful examples only where needed.
+- Merge duplicate sections.
+- Lightly dedupe repeated bullets.
+- Lightly clean obvious clutter.
+- Correct obvious transcription errors and broken headings.
+- Do not aggressively summarise.
+- Do not output tables in v1.
+- Do not add a "Quick Checklist" unless explicitly requested in the notes.
+- Put "Open Questions / Verify" near the end if present.
+- Put "Actions / Follow-up" near the end if present.
+- If uncertain terms remain unresolved, keep them under "Open Questions / Verify".
+- If uncertainties are answered elsewhere, integrate them into relevant sections.
+
+MARKDOWN REQUIREMENTS:
+- Use # for document title when appropriate.
+- Use ## for major sections.
+- Use ### for subtopics.
+- Use bullets for most notes.
+- Use ordered lists only for genuine ordered lists or process steps.
+- Avoid markdown tables in v1.
+- Preserve technical acronyms, commands, IDs, dates, names, and product terms.
+
+OUTPUT FORMAT:
+Return only valid JSON:
+{"reorganisedMarkdown":"<reorganised notes markdown>"}
+
+No markdown fences.
+No commentary.
+No extra keys.
+Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
+
+function parseNotesTransformMarkdown(
+    content: string,
+    key: "summaryMarkdown" | "reorganisedMarkdown",
+    aliasKeys: string[] = []
+): string {
+    const cleanedContent = extractJsonObjectText(content);
+    const outputChars = content.length;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(cleanedContent);
+    } catch {
+        throw new NotesTransformError(
+            "transform-output-invalid-json",
+            "Transform returned invalid JSON.",
+            {
+                stage: "invalid-json",
+                outputChars,
+            }
+        );
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new NotesTransformError(
+            "transform-output-invalid-json",
+            "Transform returned invalid JSON shape.",
+            {
+                stage: "invalid-json-shape",
+                outputChars,
+            }
+        );
+    }
+
+    const parsedObject = parsed as Record<string, unknown>;
+    const jsonKeys = safeJsonKeys(parsedObject);
+    let value = parsedObject[key];
+    let usedAliasKey: string | undefined;
+
+    if (typeof value !== "string") {
+        for (const aliasKey of aliasKeys) {
+            if (typeof parsedObject[aliasKey] === "string") {
+                value = parsedObject[aliasKey];
+                usedAliasKey = aliasKey;
+                break;
+            }
+        }
+    }
+
+    if (typeof value !== "string") {
+        throw new NotesTransformError(
+            "transform-output-missing-key",
+            `Transform response missing ${key}.`,
+            {
+                stage: "missing-key",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+            }
+        );
+    }
+
+    const markdown = value.trim();
+    if (!markdown) {
+        throw new NotesTransformError(
+            "transform-output-empty",
+            "Transform returned empty markdown.",
+            {
+                stage: "empty-output",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+                usedAliasKey,
+            }
+        );
+    }
+
+    if (looksLikeTransformErrorOutput(markdown)) {
+        throw new NotesTransformError(
+            "transform-output-error-like",
+            "Transform returned error-like markdown.",
+            {
+                stage: "error-like-output",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+                usedAliasKey,
+            }
+        );
+    }
+
+    if (usedAliasKey) {
+        console.warn(
+            `[notes-transform] Accepted alias output key — ` +
+            `expectedKey: ${key}, aliasKey: ${usedAliasKey}, ` +
+            `jsonKeys: ${formatSafeJsonKeys(jsonKeys)}, outputChars: ${outputChars}`
+        );
+    }
+
+    return markdown;
+}
+
+function looksLikeTransformErrorOutput(markdown: string): boolean {
+    const firstLine = markdown.trim().split(/\r?\n/, 1)[0]?.trim().toLowerCase() ?? "";
+    return /^(error|sorry|unable to|i cannot|i can't|as an ai)\b/.test(firstLine);
+}
+
+function formatNotesTransformError(err: NotesTransformError): string {
+    const parts = [
+        `code=${err.code}`,
+    ];
+
+    if (err.details.stage) parts.push(`stage=${err.details.stage}`);
+    if (typeof err.details.outputChars === "number") {
+        parts.push(`outputChars=${err.details.outputChars}`);
+    }
+    if (err.details.expectedKey) parts.push(`expectedKey=${err.details.expectedKey}`);
+    if (err.details.usedAliasKey) parts.push(`usedAliasKey=${err.details.usedAliasKey}`);
+    if (err.details.incompleteReason) parts.push(`incompleteReason=${safeLogValue(err.details.incompleteReason)}`);
+    if (err.details.jsonKeys) parts.push(`jsonKeys=${formatSafeJsonKeys(err.details.jsonKeys)}`);
+
+    return parts.join(" ");
+}
+
+export async function generateNotesSummary(
+    args: GenerateNotesSummaryArgs
+): Promise<{ summaryMarkdown: string }> {
+    const transformStart = Date.now();
+    const notesMarkdown = args.notesMarkdown.trim();
+    const inputTokens = countTokens(notesMarkdown);
+    const maxOutputTokens = notesTransformOutputBudget(inputTokens, 0.8);
+
+    try {
+        const response = await runOpenAIResponsesJson({
+            label: "notes-transform-summary",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: NOTES_SUMMARISE_SYS_TXT,
+            input: JSON.stringify({
+                note_style: args.noteStyle,
+                current_visible_notes: notesMarkdown,
+            }),
+            maxOutputTokens,
+            metadata: {
+                inputChars: notesMarkdown.length,
+                inputTokens,
+            },
+        });
+
+        const content = response.outputText;
+        if (response.status === "incomplete") {
+            throw new NotesTransformError(
+                "transform-output-incomplete",
+                "Summary transform returned incomplete content.",
+                {
+                    stage: "incomplete-response",
+                    outputChars: content.length,
+                    expectedKey: "summaryMarkdown",
+                    incompleteReason: response.incompleteReason ?? undefined,
+                }
+            );
+        }
+
+        if (!content) {
+            throw new NotesTransformError(
+                "transform-output-empty",
+                "Summary transform returned empty content.",
+                {
+                    stage: "empty-response",
+                    outputChars: 0,
+                    expectedKey: "summaryMarkdown",
+                }
+            );
+        }
+
+        const summaryMarkdown = parseNotesTransformMarkdown(
+            content,
+            "summaryMarkdown",
+            ["notesMarkdown", "markdown", "outputMarkdown"]
+        );
+        console.log(
+            `[notes-transform-summary] Complete — ` +
+            `inputChars: ${notesMarkdown.length}, ` +
+            `outputChars: ${summaryMarkdown.length}, ` +
+            `inputTokens: ${inputTokens}, ` +
+            `maxOutputTokens: ${maxOutputTokens}, ` +
+            `duration: ${Date.now() - transformStart}ms`
+        );
+        return { summaryMarkdown };
+    } catch (err) {
+        if (isNotesTransformError(err)) {
+            console.warn(
+                `[notes-transform-summary] Invalid output — ` +
+                `inputChars: ${notesMarkdown.length}, ` +
+                `duration: ${Date.now() - transformStart}ms, ` +
+                `${formatNotesTransformError(err)}`
+            );
+            throw err;
+        }
+
+        console.error(
+            `[notes-transform-summary] Error — ` +
+            `inputChars: ${notesMarkdown.length}, ` +
+            `duration: ${Date.now() - transformStart}ms, ` +
+            `error: ${safeErrorInfo(err)}`
+        );
+        throw new NotesTransformError(
+            "transform-provider-error",
+            "Summary transform failed.",
+            {
+                stage: "provider-error",
+            }
+        );
+    }
+}
+
+export async function generateNotesReorganisation(
+    args: GenerateNotesReorganisationArgs
+): Promise<{ reorganisedMarkdown: string }> {
+    const transformStart = Date.now();
+    const notesMarkdown = args.notesMarkdown.trim();
+    const targetSections = args.targetSections ?? [];
+    const inputTokens = countTokens(notesMarkdown);
+    const maxOutputTokens = notesTransformOutputBudget(inputTokens, 1.1);
+
+    try {
+        const response = await runOpenAIResponsesJson({
+            label: "notes-transform-reorganise",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            instructions: NOTES_REORGANISE_SYS_TXT,
+            input: JSON.stringify({
+                note_style: args.noteStyle,
+                target_sections: targetSections.length > 0 ? targetSections : undefined,
+                current_visible_notes: notesMarkdown,
+            }),
+            maxOutputTokens,
+            metadata: {
+                inputChars: notesMarkdown.length,
+                inputTokens,
+                targetSectionCount: targetSections.length,
+            },
+        });
+
+        const content = response.outputText;
+        if (response.status === "incomplete") {
+            throw new NotesTransformError(
+                "transform-output-incomplete",
+                "Reorganise transform returned incomplete content.",
+                {
+                    stage: "incomplete-response",
+                    outputChars: content.length,
+                    expectedKey: "reorganisedMarkdown",
+                    incompleteReason: response.incompleteReason ?? undefined,
+                }
+            );
+        }
+
+        if (!content) {
+            throw new NotesTransformError(
+                "transform-output-empty",
+                "Reorganise transform returned empty content.",
+                {
+                    stage: "empty-response",
+                    outputChars: 0,
+                    expectedKey: "reorganisedMarkdown",
+                }
+            );
+        }
+
+        const reorganisedMarkdown = parseNotesTransformMarkdown(content, "reorganisedMarkdown");
+        if (reorganisedMarkdown.length < notesMarkdown.length * 0.5) {
+            throw new NotesTransformError(
+                "reorganise-output-too-short",
+                "Reorganise transform returned unexpectedly short markdown.",
+                {
+                    stage: "too-short-output",
+                    outputChars: reorganisedMarkdown.length,
+                    expectedKey: "reorganisedMarkdown",
+                }
+            );
+        }
+
+        console.log(
+            `[notes-transform-reorganise] Complete — ` +
+            `inputChars: ${notesMarkdown.length}, ` +
+            `outputChars: ${reorganisedMarkdown.length}, ` +
+            `targetSectionCount: ${targetSections.length}, ` +
+            `inputTokens: ${inputTokens}, ` +
+            `maxOutputTokens: ${maxOutputTokens}, ` +
+            `duration: ${Date.now() - transformStart}ms`
+        );
+        return { reorganisedMarkdown };
+    } catch (err) {
+        if (isNotesTransformError(err)) {
+            console.warn(
+                `[notes-transform-reorganise] Invalid output — ` +
+                `inputChars: ${notesMarkdown.length}, ` +
+                `targetSectionCount: ${targetSections.length}, ` +
+                `duration: ${Date.now() - transformStart}ms, ` +
+                `${formatNotesTransformError(err)}`
+            );
+            throw err;
+        }
+
+        console.error(
+            `[notes-transform-reorganise] Error — ` +
+            `inputChars: ${notesMarkdown.length}, ` +
+            `targetSectionCount: ${targetSections.length}, ` +
+            `duration: ${Date.now() - transformStart}ms, ` +
+            `error: ${safeErrorInfo(err)}`
+        );
+        throw new NotesTransformError(
+            "transform-provider-error",
+            "Reorganise transform failed.",
+            {
+                stage: "provider-error",
+            }
+        );
+    }
+}

@@ -12,8 +12,8 @@
         "app.ts",
         "transcription.ts",
         "parse-gpt.ts",
-        "parse-groq.ts",
         "types.ts",
+        "gpt/**/*.ts",
         "audio/**/*.ts",
         "load/**/*.ts",
         "test/**/*.ts"
