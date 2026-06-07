@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { shortHash } from "./safe-log.js";
 import { MAX_NOTES_SESSION_MS } from "./types.js";
 
 export const NOTES_RECONNECT_CAP_GRACE_MS = 2 * 60_000;
@@ -47,16 +48,12 @@ type ResolveInput = {
 
 const windows = new Map<string, NotesCapWindow>();
 
-function hashValue(value: string): string {
-    return createHash("sha256").update(value).digest("hex").slice(0, 16);
-}
-
 function safeUserHash(userId: string): string {
-    return hashValue(`user:${userId}`);
+    return shortHash(`user:${userId}`);
 }
 
 function safeRecordingSessionHash(recordingSessionId: string): string {
-    return hashValue(`recording:${recordingSessionId}`);
+    return shortHash(`recording:${recordingSessionId}`);
 }
 
 function registryKey(userId: string, recordingSessionId: string): string {
