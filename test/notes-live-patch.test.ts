@@ -85,6 +85,108 @@ describe("notes live patch application", () => {
         expect(second).toContain("- Another uncategorised point.");
     });
 
+    it("allows safe fallback markdown to create provisional top-level sections", () => {
+        const fallback = [
+            "## Main points",
+            "",
+            "- Capture the initial topic.",
+            "",
+            "## Actions",
+            "",
+            "- Follow up after the recording.",
+            "",
+            "## Open Questions / Verify",
+            "",
+            "- Confirm the owner.",
+        ].join("\n");
+
+        const updated = applyNotesLivePatch("", {
+            updates: [],
+            fallbackAppendMarkdown: fallback,
+        });
+
+        expect(updated).toBe(fallback);
+        expect(updated).not.toContain("## Live updates");
+    });
+
+    it("rejects live fallback markdown that tries to create a document title", () => {
+        const current = "## Existing\n\n- Already here.";
+        const updated = applyNotesLivePatch(current, {
+            updates: [],
+            fallbackAppendMarkdown: "# Session Title\n\n## Main points\n\n- Should not land.",
+        });
+
+        expect(updated).toBe(current);
+    });
+
+    it("rejects live fallback heading spam", () => {
+        const current = "## Existing\n\n- Already here.";
+        const updated = applyNotesLivePatch(current, {
+            updates: [],
+            fallbackAppendMarkdown: [
+                "## One",
+                "",
+                "- A",
+                "",
+                "## Two",
+                "",
+                "- B",
+                "",
+                "## Three",
+                "",
+                "- C",
+                "",
+                "## Four",
+                "",
+                "- D",
+            ].join("\n"),
+        });
+
+        expect(updated).toBe(current);
+    });
+
+    it("rejects huge malformed live fallback fragments", () => {
+        const current = "## Existing\n\n- Already here.";
+        const updated = applyNotesLivePatch(current, {
+            updates: [],
+            fallbackAppendMarkdown: `## Main points\n\n${"- Too much content.\n".repeat(400)}`,
+        });
+
+        expect(updated).toBe(current);
+    });
+
+    it("rejects fallback fragments that repeat most existing notes", () => {
+        const current = [
+            "## Main points",
+            "",
+            "- Existing decision about launch timing.",
+            "- Existing action for Sam to follow up.",
+            "- Existing caveat about deployment risk.",
+            "",
+            "## Open Questions / Verify",
+            "",
+            "- Existing question about ownership.",
+        ].join("\n");
+
+        const updated = applyNotesLivePatch(current, {
+            updates: [],
+            fallbackAppendMarkdown: [
+                "## Main points",
+                "",
+                "- Existing decision about launch timing.",
+                "- Existing action for Sam to follow up.",
+                "- Existing caveat about deployment risk.",
+                "",
+                "## Open Questions / Verify",
+                "",
+                "- Existing question about ownership.",
+                "- New point that should not justify repeating everything.",
+            ].join("\n"),
+        });
+
+        expect(updated).toBe(current);
+    });
+
     it("keeps repeated bullet appends compact", () => {
         const updated = applyNotesLivePatch("## Live updates\n\n- First update.", {
             updates: [{

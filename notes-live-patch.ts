@@ -20,6 +20,8 @@ export type MarkdownHeadingBlock = {
 
 const FALLBACK_HEADING = "Live updates";
 const HEADING_RE = /^(#{2,3})\s+(.+)$/;
+const MAX_FALLBACK_TOP_LEVEL_HEADINGS = 3;
+const MAX_FALLBACK_TOTAL_HEADINGS = 6;
 
 export function normalizeMarkdownHeading(text: string): string {
     return text
@@ -69,8 +71,12 @@ export function applyNotesLivePatch(canonicalMarkdown: string, patch: NotesLiveP
     }
 
     const fallbackAppendMarkdown = normalizeAppendMarkdown(patch.fallbackAppendMarkdown ?? "");
-    if (fallbackAppendMarkdown && !isUnsafeAppendMarkdown(fallbackAppendMarkdown)) {
-        markdown = appendUnderFallback(markdown, fallbackAppendMarkdown);
+    if (
+        fallbackAppendMarkdown &&
+        !isUnsafeFallbackAppendMarkdown(fallbackAppendMarkdown) &&
+        !repeatsExistingNotes(markdown, fallbackAppendMarkdown)
+    ) {
+        markdown = appendFallbackMarkdown(markdown, fallbackAppendMarkdown);
     }
 
     return markdown;
@@ -121,6 +127,14 @@ function appendUnderFallback(markdown: string, appendMarkdown: string): string {
     const base = markdown.trimEnd();
     if (base.length === 0) return `## ${FALLBACK_HEADING}\n\n${appendMarkdown}`;
     return `${base}\n\n## ${FALLBACK_HEADING}\n\n${appendMarkdown}`;
+}
+
+function appendFallbackMarkdown(markdown: string, appendMarkdown: string): string {
+    if (!hasTopLevelHeading(appendMarkdown)) return appendUnderFallback(markdown, appendMarkdown);
+
+    const base = markdown.trimEnd();
+    if (base.length === 0) return appendMarkdown;
+    return `${base}\n\n${appendMarkdown}`;
 }
 
 function insertAppendLines(lines: string[], insertionIndex: number, appendMarkdown: string): void {
@@ -202,8 +216,47 @@ function isUnsafeAppendMarkdown(markdown: string): boolean {
     const anyHeadingCount = lines.filter((line) => HEADING_RE.test(line)).length;
 
     if (markdown.length > 6000) return true;
+    if (hasDocumentTitle(markdown)) return true;
     if (topLevelHeadingCount > 0) return true;
     if (markdown.length > 2500 && anyHeadingCount >= 3) return true;
 
     return false;
+}
+
+function isUnsafeFallbackAppendMarkdown(markdown: string): boolean {
+    const lines = markdown.split(/\r?\n/);
+    const topLevelHeadingCount = lines.filter((line) => /^##\s+/.test(line)).length;
+    const anyHeadingCount = lines.filter((line) => HEADING_RE.test(line)).length;
+
+    if (markdown.length > 6000) return true;
+    if (hasDocumentTitle(markdown)) return true;
+    if (topLevelHeadingCount > MAX_FALLBACK_TOP_LEVEL_HEADINGS) return true;
+    if (anyHeadingCount > MAX_FALLBACK_TOTAL_HEADINGS) return true;
+    if (markdown.length > 2500 && anyHeadingCount >= 3) return true;
+
+    return false;
+}
+
+function hasDocumentTitle(markdown: string): boolean {
+    return markdown.split(/\r?\n/).some((line) => /^#\s+/.test(line));
+}
+
+function hasTopLevelHeading(markdown: string): boolean {
+    return markdown.split(/\r?\n/).some((line) => /^##\s+/.test(line));
+}
+
+function repeatsExistingNotes(canonicalMarkdown: string, appendMarkdown: string): boolean {
+    const existingLines = normalizedMeaningfulLines(canonicalMarkdown);
+    if (existingLines.length < 4) return false;
+
+    const appendLines = new Set(normalizedMeaningfulLines(appendMarkdown));
+    const repeatedLines = existingLines.filter((line) => appendLines.has(line)).length;
+    return repeatedLines >= Math.ceil(existingLines.length * 0.7);
+}
+
+function normalizedMeaningfulLines(markdown: string): string[] {
+    return markdown
+        .split(/\r?\n/)
+        .map((line) => line.trim().replace(/\s+/g, " ").toLowerCase())
+        .filter((line) => line.length >= 8);
 }
