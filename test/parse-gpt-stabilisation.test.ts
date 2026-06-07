@@ -1,15 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-const openAiMock = vi.hoisted(() => ({
-    create: vi.fn(),
-}));
+const openAiMock = vi.hoisted(() => {
+    const chatCreate = vi.fn();
+    const responsesCreate = vi.fn();
+    return {
+        chatCreate,
+        responsesCreate,
+        create: chatCreate,
+    };
+});
 
 vi.mock("openai", () => ({
     OpenAI: vi.fn(() => ({
         chat: {
             completions: {
-                create: openAiMock.create,
+                create: openAiMock.chatCreate,
             },
+        },
+        responses: {
+            create: openAiMock.responsesCreate,
         },
     })),
 }));
@@ -34,9 +43,26 @@ const LONG_NOTES = [
     ),
 ].join("\n");
 
+function responsesJson(content: string, overrides: Record<string, unknown> = {}) {
+    return {
+        output_text: content,
+        status: "completed",
+        incomplete_details: null,
+        usage: {
+            input_tokens: 12,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 8,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: 20,
+        },
+        ...overrides,
+    };
+}
+
 describe("parse-gpt stabilisation", () => {
     beforeEach(() => {
-        openAiMock.create.mockReset();
+        openAiMock.chatCreate.mockReset();
+        openAiMock.responsesCreate.mockReset();
     });
 
     it("runs incremental extraction for one-word Forms values", async () => {
@@ -52,6 +78,8 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ answer: "yes" });
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
+        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
     });
 
     it("runs final extraction for one-word Forms values", async () => {
@@ -67,6 +95,7 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ answer: "yes" });
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
+        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4");
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
     });
 
@@ -74,9 +103,53 @@ describe("parse-gpt stabilisation", () => {
         const raw = "This raw Whisper transcript should survive revision failure.";
         const err = new Error("simulated provider failure");
         (err as Error & { code?: string }).code = "ETIMEDOUT";
-        openAiMock.create.mockRejectedValueOnce(err);
+        openAiMock.responsesCreate.mockRejectedValueOnce(err);
 
         await expect(reviseTranscription(raw)).resolves.toBe(raw);
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "none" });
+        expect(openAiMock.responsesCreate.mock.calls[0][0].text).toEqual({ format: { type: "json_object" } });
+    });
+
+    it("uses Responses API for revision and returns corrected text on valid JSON", async () => {
+        const raw = "This raw Whisper transcript needs spelling correction today.";
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ correctedText: "This revised transcript keeps the intended meaning." }))
+        );
+
+        await expect(reviseTranscription(raw)).resolves.toBe(
+            "This revised transcript keeps the intended meaning."
+        );
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
+        expect(request.model).toBe("gpt-5.4-mini");
+        expect(request.reasoning).toEqual({ effort: "none" });
+        expect(request.text).toEqual({ format: { type: "json_object" } });
+        expect(request.max_output_tokens).toBeGreaterThan(0);
+    });
+
+    it("fails open for invalid, empty, missing-key, and incomplete revision Responses output", async () => {
+        const raw = "This raw Whisper transcript should survive every bad revision output.";
+
+        for (const response of [
+            responsesJson("not json"),
+            responsesJson(""),
+            responsesJson(JSON.stringify({ wrongKey: "No corrected text." })),
+            responsesJson(
+                JSON.stringify({ correctedText: "Partial" }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            ),
+        ]) {
+            openAiMock.responsesCreate.mockResolvedValueOnce(response);
+            await expect(reviseTranscription(raw)).resolves.toBe(raw);
+        }
+
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(4);
     });
 
     it("skips Notes revision for short or sparse transcript batches", async () => {
@@ -88,7 +161,8 @@ describe("parse-gpt stabilisation", () => {
         const sparse = "Architecture stabilisation requires precise rollout sequencing.";
         await expect(reviseTranscription(sparse, { mode: "notes" })).resolves.toBe(sparse);
 
-        expect(openAiMock.create).not.toHaveBeenCalled();
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).not.toHaveBeenCalled();
     });
 
     it("skips Forms revision for short field-like values without dropping them", async () => {
@@ -96,7 +170,8 @@ describe("parse-gpt stabilisation", () => {
             await expect(reviseTranscription(value, { mode: "forms" })).resolves.toBe(value);
         }
 
-        expect(openAiMock.create).not.toHaveBeenCalled();
+        expect(openAiMock.chatCreate).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).not.toHaveBeenCalled();
     });
 
     it("keeps the legacy notes incremental return value as full markdown", async () => {
@@ -125,6 +200,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toContain("- Existing decision.");
         expect(result).toContain("- Confirmed the backend keeps the old response shape.");
         expect(result).not.toContain("\"updates\"");
+        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
         expect(openAiMock.create.mock.calls[0][0].max_completion_tokens).toBe(1024);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
     });
@@ -156,6 +232,7 @@ describe("parse-gpt stabilisation", () => {
         );
 
         expect(result).toBe("## Summary\n\n- Final note.");
+        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4");
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("medium");
     });
 
@@ -171,7 +248,7 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ summaryMarkdown: "## Summary\n\n- Condensed note." });
         const request = openAiMock.create.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.5");
+        expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning_effort).toBe("medium");
         expect(request.response_format).toEqual({ type: "json_object" });
         expect(request.messages[0].content).toContain("Transform current visible notes only.");
@@ -255,7 +332,7 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ reorganisedMarkdown: reorganised });
         const request = openAiMock.create.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.5");
+        expect(request.model).toBe("gpt-5.4");
         expect(request.reasoning_effort).toBe("medium");
         expect(request.response_format).toEqual({ type: "json_object" });
         expect(request.messages[0].content).toContain("Transform current visible notes only.");

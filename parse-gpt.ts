@@ -8,9 +8,10 @@ dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const GPT_MINI_MODEL = "gpt-5.4-mini";
-const GPT_FULL_MODEL = "gpt-5.4";
-const GPT_REASONING_EFFORT = "low" as const;
-const FINAL_GPT_REASONING_EFFORT = "medium" as const;
+const GPT_FINAL_MODEL = "gpt-5.4";
+const GPT_REVISION_REASONING_EFFORT = "none" as const;
+const GPT_LIVE_REASONING_EFFORT = "low" as const;
+const GPT_FINAL_REASONING_EFFORT = "medium" as const;
 const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
 const DEFAULT_REVISION_MIN_CHARS = 15;
 const NOTES_REVISION_MIN_CHARS = 40;
@@ -689,6 +690,138 @@ function formatJsonKeys(keys: string[]): string {
     return `[${keys.map((key) => key.replace(/[^A-Za-z0-9_-]/g, "")).filter(Boolean).join(",")}]`;
 }
 
+type ResponsesReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+type ResponsesJsonCallResult = {
+    outputText: string;
+    status: string;
+    incompleteReason: string | null;
+    durationMs: number;
+};
+
+async function runOpenAIResponsesJson(args: {
+    label: string;
+    model: string;
+    reasoningEffort: ResponsesReasoningEffort;
+    instructions: string;
+    input: string;
+    maxOutputTokens: number;
+    metadata?: Record<string, string | number | boolean | undefined>;
+}): Promise<ResponsesJsonCallResult> {
+    const startedAt = Date.now();
+    const response = await openai.responses.create({
+        model: args.model,
+        instructions: args.instructions,
+        input: args.input,
+        reasoning: { effort: args.reasoningEffort },
+        max_output_tokens: args.maxOutputTokens,
+        text: { format: { type: "json_object" } },
+    }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+
+    const durationMs = Date.now() - startedAt;
+    const outputText = response.output_text ?? "";
+    const status = safeString(response.status) ?? "unknown";
+    const incompleteReason = safeString(response.incomplete_details?.reason) ?? null;
+    const usage = response.usage;
+    const parts = [
+        `api: responses`,
+        `label: ${safeLogValue(args.label)}`,
+        `model: ${safeLogValue(args.model)}`,
+        `reasoningEffort: ${safeLogValue(args.reasoningEffort)}`,
+        `status: ${status}`,
+        `outputChars: ${outputText.length}`,
+        `maxOutputTokens: ${args.maxOutputTokens}`,
+        `duration: ${durationMs}ms`,
+    ];
+
+    if (incompleteReason) parts.push(`incompleteReason: ${incompleteReason}`);
+    appendSafeNumber(parts, "inputTokens", usage?.input_tokens);
+    appendSafeNumber(parts, "cachedInputTokens", usage?.input_tokens_details?.cached_tokens);
+    appendSafeNumber(parts, "outputTokens", usage?.output_tokens);
+    appendSafeNumber(parts, "reasoningTokens", usage?.output_tokens_details?.reasoning_tokens);
+    appendSafeNumber(parts, "totalTokens", usage?.total_tokens);
+
+    for (const [key, value] of Object.entries(args.metadata ?? {})) {
+        if (typeof value === "number" && Number.isFinite(value)) {
+            parts.push(`${safeLogValue(key)}: ${value}`);
+        } else if (typeof value === "boolean") {
+            parts.push(`${safeLogValue(key)}: ${value}`);
+        } else if (typeof value === "string") {
+            parts.push(`${safeLogValue(key)}: ${safeLogValue(value)}`);
+        }
+    }
+
+    console.log(`[${args.label}] Provider — ${parts.join(", ")}`);
+
+    return {
+        outputText,
+        status,
+        incompleteReason,
+        durationMs,
+    };
+}
+
+function logNotesTransformProviderMetadata(
+    label: "summary" | "reorganise",
+    completion: unknown,
+    content: string | null | undefined,
+    metadata: {
+        inputChars: number;
+        inputTokens: number;
+        maxOutputTokens: number;
+        targetSectionCount?: number;
+    }
+): void {
+    const response = completion as {
+        choices?: Array<{ finish_reason?: unknown }>;
+        usage?: {
+            prompt_tokens?: unknown;
+            completion_tokens?: unknown;
+            total_tokens?: unknown;
+            completion_tokens_details?: {
+                reasoning_tokens?: unknown;
+            };
+        };
+    };
+    const finishReason = safeString(response.choices?.[0]?.finish_reason) ?? "unknown";
+    const choiceCount = Array.isArray(response.choices) ? response.choices.length : 0;
+    const usage = response.usage;
+    const details = [
+        `inputChars: ${metadata.inputChars}`,
+        `inputTokens: ${metadata.inputTokens}`,
+        `maxOutputTokens: ${metadata.maxOutputTokens}`,
+        `finishReason: ${finishReason}`,
+        `choiceCount: ${choiceCount}`,
+        `contentChars: ${content?.length ?? 0}`,
+    ];
+
+    if (typeof metadata.targetSectionCount === "number") {
+        details.push(`targetSectionCount: ${metadata.targetSectionCount}`);
+    }
+    appendSafeNumber(details, "promptTokens", usage?.prompt_tokens);
+    appendSafeNumber(details, "completionTokens", usage?.completion_tokens);
+    appendSafeNumber(details, "totalTokens", usage?.total_tokens);
+    appendSafeNumber(details, "reasoningTokens", usage?.completion_tokens_details?.reasoning_tokens);
+
+    console.log(`[notes-transform-${label}] Provider — ${details.join(", ")}`);
+}
+
+function safeString(value: unknown): string | null {
+    return typeof value === "string" && value.length > 0
+        ? value.replace(/[^A-Za-z0-9_-]/g, "")
+        : null;
+}
+
+function safeLogValue(value: string): string {
+    return value.replace(/[^A-Za-z0-9_.-]/g, "");
+}
+
+function appendSafeNumber(parts: string[], key: string, value: unknown): void {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        parts.push(`${key}: ${value}`);
+    }
+}
+
 function notesTransformOutputBudget(inputTokens: number, multiplier: number): number {
     return Math.min(
         NOTES_FINAL_MAX_OUTPUT_TOKENS,
@@ -731,18 +864,31 @@ export async function reviseTranscription(rawText: string, options: RevisionOpti
     );
 
     try {
-        const completion = await openai.chat.completions.create({
+        const response = await runOpenAIResponsesJson({
+            label: "revise",
             model: GPT_MINI_MODEL,
-            messages: [
-                { role: "system", content: REVISE_SYS_TXT },
-                { role: "user", content: rawText },
-            ],
-            max_completion_tokens: maxOutputTokens,
-            response_format: { type: "json_object" },
-            reasoning_effort: GPT_REASONING_EFFORT,
-        }, { timeout: GPT_REQUEST_TIMEOUT_MS });
+            reasoningEffort: GPT_REVISION_REASONING_EFFORT,
+            instructions: REVISE_SYS_TXT,
+            input: rawText,
+            maxOutputTokens,
+            metadata: {
+                inputChars: rawText.length,
+                inputTokens,
+            },
+        });
 
-        const content = completion.choices?.[0]?.message?.content;
+        if (response.status === "incomplete") {
+            console.warn(
+                `[revise] Incomplete response, using original — ` +
+                `inputChars: ${rawText.length}, ` +
+                `outputChars: ${response.outputText.length}, ` +
+                `reason: ${response.incompleteReason ?? "unknown"}, ` +
+                `duration: ${response.durationMs}ms`
+            );
+            return rawText;
+        }
+
+        const content = response.outputText;
         if (!content) {
             console.warn(`[revise] Empty response, using original — inputChars: ${rawText.length}, duration: ${Date.now() - reviseStart}ms`);
             return rawText;
@@ -798,7 +944,7 @@ export async function extractAttributesFromText(
             ],
             max_completion_tokens: maxOutputTokens,
             response_format: { type: "json_object" },
-            reasoning_effort: GPT_REASONING_EFFORT,
+            reasoning_effort: GPT_LIVE_REASONING_EFFORT,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
@@ -838,7 +984,7 @@ export async function parseFinalAttributes(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: GPT_FULL_MODEL,
+            model: GPT_FINAL_MODEL,
             messages: [
                 { role: "system", content: FINAL_SYS_TXT },
                 {
@@ -851,7 +997,7 @@ export async function parseFinalAttributes(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
+            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
@@ -874,7 +1020,7 @@ export async function parseFinalAttributes(
             }
         }
 
-        console.log(`[final] ${GPT_FULL_MODEL} pass complete. Updated ${updatedCount} fields.`);
+        console.log(`[final] ${GPT_FINAL_MODEL} pass complete. Updated ${updatedCount} fields.`);
         return merged;
     } catch (err) {
         console.error(`[final] Error — ${safeErrorInfo(err)}`);
@@ -920,7 +1066,7 @@ export async function generateNotesIncrementalPatch(
         ],
         max_completion_tokens: maxOutputTokens,
         response_format: { type: "json_object" },
-        reasoning_effort: GPT_REASONING_EFFORT,
+        reasoning_effort: GPT_LIVE_REASONING_EFFORT,
     }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
     const content = completion.choices?.[0]?.message?.content;
@@ -972,7 +1118,7 @@ export async function generateNotesSummary(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: GPT_FULL_MODEL,
+            model: GPT_FINAL_MODEL,
             messages: [
                 { role: "system", content: NOTES_SUMMARISE_SYS_TXT },
                 {
@@ -984,11 +1130,16 @@ export async function generateNotesSummary(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
+            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
+        logNotesTransformProviderMetadata("summary", completion, content, {
+            inputChars: notesMarkdown.length,
+            inputTokens,
+            maxOutputTokens,
+        });
         if (!content) {
             throw new NotesTransformError(
                 "transform-output-empty",
@@ -1053,7 +1204,7 @@ export async function generateNotesReorganisation(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: GPT_FULL_MODEL,
+            model: GPT_FINAL_MODEL,
             messages: [
                 { role: "system", content: NOTES_REORGANISE_SYS_TXT },
                 {
@@ -1066,11 +1217,17 @@ export async function generateNotesReorganisation(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
+            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
+        logNotesTransformProviderMetadata("reorganise", completion, content, {
+            inputChars: notesMarkdown.length,
+            inputTokens,
+            maxOutputTokens,
+            targetSectionCount: targetSections.length,
+        });
         if (!content) {
             throw new NotesTransformError(
                 "transform-output-empty",
@@ -1138,7 +1295,7 @@ export async function generateNotesReorganisation(
 /**
  * Final polished notes pass over the complete transcript.
  * Runs on stop, same cadence as parseFinalAttributes.
- * Uses gpt-5.4 for maximum quality.
+ * Uses the final-quality model/reasoning route.
  */
 export async function finalizeNotes(
     fullTranscript: string,
@@ -1162,7 +1319,7 @@ export async function finalizeNotes(
     );
     console.log(
         `[notes-final] Context — ` +
-        `model: ${GPT_FULL_MODEL}, ` +
+        `model: ${GPT_FINAL_MODEL}, ` +
         `limit: ${NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT}, ` +
         `transcriptBefore: ${fullTranscript.length}, ` +
         `transcriptAfter: ${truncated.length}, ` +
@@ -1174,7 +1331,7 @@ export async function finalizeNotes(
 
     try {
         const completion = await openai.chat.completions.create({
-            model: GPT_FULL_MODEL,
+            model: GPT_FINAL_MODEL,
             messages: [
                 { role: "system", content: NOTES_FINAL_SYS_TXT },
                 {
@@ -1188,7 +1345,7 @@ export async function finalizeNotes(
                 },
             ],
             response_format: { type: "json_object" },
-            reasoning_effort: FINAL_GPT_REASONING_EFFORT,
+            reasoning_effort: GPT_FINAL_REASONING_EFFORT,
             max_completion_tokens: maxOutputTokens,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
@@ -1204,7 +1361,7 @@ export async function finalizeNotes(
             console.warn("[notes-final] Missing notesMarkdown key, returning current");
             return currentNotes;
         }
-        console.log(`[notes-final] ${GPT_FULL_MODEL} pass complete: ${finalized.length} chars`);
+        console.log(`[notes-final] ${GPT_FINAL_MODEL} pass complete: ${finalized.length} chars`);
         return finalized;
     } catch (err) {
         console.error(`[notes-final] Error — ${safeErrorInfo(err)}`);
