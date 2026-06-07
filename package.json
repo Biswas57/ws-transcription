@@ -27,7 +27,7 @@
     "jsonwebtoken": "^9.0.3",
     "murmurhash-js": "^1.0.0",
     "onnxruntime-node": "^1.26.0",
-    "openai": "^5.8.2",
+    "openai": "^6.42.0",
     "p-queue": "^7.3.0",
     "quick-lru": "^7.0.1",
     "vitest": "^3.2.4",
