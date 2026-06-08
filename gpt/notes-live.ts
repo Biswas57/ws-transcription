@@ -24,6 +24,8 @@ LIVE NOTE PURPOSE:
 The notes should feel useful while recording, not just after finalisation.
 Create useful structure once enough signal exists, usually within the first 2-4 updates.
 Do not leave all content under a generic "Live updates" heading once the topic is clear.
+As the session develops, prefer content-specific headings over generic headings.
+Prefer headings based on the actual content, such as themes, phases, concepts, decisions, process areas, or discussion topics.
 If current_notes is empty or has no useful structure yet, create a small provisional structure using concise ## headings in fallbackAppendMarkdown.
 Prefer 2-5 useful sections over one long generic bullet list.
 Use provisional headings when needed; final notes can improve them later.
@@ -62,6 +64,8 @@ TARGET HEADING RULES:
 - If sections were provided and matching headings already exist in current_notes, prefer those stable top-level sections.
 - If sections were provided but the new content clearly does not fit any section yet, do not force it into the wrong section.
 - Use a neutral temporary section sparingly only when needed.
+- When transcript_segment introduces a clear new major topic, create or use an appropriate ## heading.
+- After the first few updates, avoid continuing under one broad or generic section when clearer topic sections are available.
 - If no existing heading fits and creating a new heading would make the notes clearer, use fallbackAppendMarkdown with a concise new ## heading and bullets.
 - If current_notes is empty or only has a generic live-update section, use fallbackAppendMarkdown to create the first useful provisional ## sections.
 - Do not create a # document title in live updates.

@@ -80,12 +80,18 @@ SOURCE-OF-TRUTH RULES:
 SUMMARISE REQUIREMENTS:
 - Preserve existing structure where possible.
 - Do not reorganise into a new structure unless the existing structure is clearly weak or duplicated.
+- For medium or long notes, produce a visibly shorter review version unless the notes are already extremely compact.
+- Long notes should usually be meaningfully shorter; do not force an exact percentage.
+- Around 60% of the original length is a practical lower target when useful, while concise notes may need little or no compression.
 - Dedupe repeated notes.
+- Remove repeated framing, duplicated explanation, transcript-like wording, and overly granular supporting detail.
+- Merge small or overlapping bullets where meaning is preserved.
 - Compress overexplained concepts.
+- Compress supporting detail while preserving key facts, dates, numbers, names, definitions, actions, caveats, risks, commands, IDs, technical terms, product names, and representative examples.
 - Clean phrasing.
 - Keep already clear and concise sections mostly unchanged.
 - Merge only extremely weak, duplicated, or clearly overlapping headings.
-- Preserve important facts, definitions, actions, caveats, risks, dates, commands, IDs, technical terms, product names, names, and relevant examples.
+- Preserve important facts, definitions, actions, caveats, risks, dates, numbers, commands, IDs, technical terms, product names, names, and relevant examples.
 - Preserve representative examples that explain or anchor a concept, but shorten long examples to their key point.
 - Remove irrelevant examples and obvious clutter.
 - Compress tangents, side segments, announcements, or off-topic-but-useful content more than the main content unless they are central to the note purpose.
@@ -94,7 +100,7 @@ SUMMARISE REQUIREMENTS:
 - Omit "Open Questions / Verify" if nothing unresolved remains.
 - Do not add a Quick Checklist unless explicitly requested in the notes.
 - Do not blindly shorten notes.
-- Compression should be adaptive: longer notes can be compressed more, but do not compress below roughly 60% unless the notes are extremely repetitive.
+- Compression should be adaptive: longer notes can be compressed more, while already concise notes should stay mostly intact.
 - If the notes are already concise and cohesive, make minimal changes.
 
 MARKDOWN REQUIREMENTS:
