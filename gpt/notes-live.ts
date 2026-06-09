@@ -165,6 +165,7 @@ export async function generateNotesIncrementalPatch(
 
     const completion = await openai.chat.completions.create({
         model: GPT_MINI_MODEL,
+        store: false,
         messages: [
             { role: "system", content: NOTES_INCREMENTAL_SYS_TXT },
             {

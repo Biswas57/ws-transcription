@@ -76,6 +76,7 @@ function expectJsonSchemaFormat(
     name: string,
     key: string
 ) {
+    expect(request).toMatchObject({ store: false });
     expect(request.text?.format).toMatchObject({
         type: "json_schema",
         name,
@@ -117,6 +118,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toEqual({ answer: "yes" });
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
         expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
         const instructions = openAiMock.create.mock.calls[0][0].messages[0].content;
         expect(instructions).toContain("Short values such as \"yes\", \"no\", names, dates, times, dollar amounts, phone numbers, and \"N/A\" can be complete valid answers");
@@ -302,6 +304,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toContain("- Confirmed the backend keeps the old response shape.");
         expect(result).not.toContain("\"updates\"");
         expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
         expect(openAiMock.create.mock.calls[0][0].max_completion_tokens).toBe(1024);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
         const instructions = openAiMock.create.mock.calls[0][0].messages[0].content;

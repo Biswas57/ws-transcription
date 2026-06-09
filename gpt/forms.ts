@@ -167,6 +167,7 @@ export async function extractAttributesFromText(
     try {
         const completion = await openai.chat.completions.create({
             model: GPT_MINI_MODEL,
+            store: false,
             messages: [
                 { role: "system", content: EXTRACT_SYS_TXT },
                 {

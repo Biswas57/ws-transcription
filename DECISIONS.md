@@ -147,3 +147,11 @@ audio batch
 
 - Runtime logs must not include raw user IDs, raw client close reasons, Notes section names, unknown field keys, final attributes, transcripts, notes, form values, JWTs/tokens, or secrets.
 - Safe logs include counts, lengths, timings, mode, booleans, safe error names/codes, truncation flags, and VAD metadata without content.
+
+### OpenAI Storage And Provider State
+
+- OpenAI Responses calls default to `store: false` through the central GPT provider helper.
+- Live Chat Completions calls also set `store: false` where supported by the current SDK.
+- Formify keeps canonical notes and forms app-owned; provider-owned Responses state, Conversations, and `previous_response_id` are not used by default.
+- Runtime logs must not include raw transcripts, notes, prompts, generated markdown, form values, template names, field labels, section names, secrets, tokens, user IDs, emails, or raw session IDs.
+- This is privacy-first backend hygiene only. Medical, HIPAA, or regulated professional use would require separate legal, compliance, security, access-control, audit-log, retention, and incident-response work.

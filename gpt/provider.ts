@@ -39,6 +39,7 @@ export async function runOpenAIResponsesJson(args: {
     try {
         response = await openai.responses.create({
             model: args.model,
+            store: false,
             instructions: args.instructions,
             input: args.input,
             reasoning: { effort: args.reasoningEffort },
