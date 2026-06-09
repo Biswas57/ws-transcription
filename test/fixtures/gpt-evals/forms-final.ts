@@ -1,0 +1,73 @@
+import type { FormsFinalEvalFixture } from "./types.js";
+
+export const formsFinalFixtures: FormsFinalEvalFixture[] = [
+    {
+        kind: "forms-final",
+        name: "medical-intake-basic",
+        transcript: [
+            "First name Alex.",
+            "Appointment day Tuesday.",
+            "The fee is five hundred dollars.",
+            "Preferred time is 3pm.",
+            "Allergies are not applicable.",
+            "Email is unknown.",
+        ].join(" "),
+        fields: [
+            { key: "firstName", label: "First name" },
+            { key: "appointmentDay", label: "Appointment day" },
+            { key: "fee", label: "Fee" },
+            { key: "preferredTime", label: "Preferred time" },
+            { key: "allergies", label: "Allergies" },
+            { key: "email", label: "Email" },
+        ],
+        expectedFinalAttributes: {
+            firstName: "Alex",
+            appointmentDay: "Tuesday",
+            fee: "$500",
+            preferredTime: "3pm",
+            allergies: "N/A",
+            email: "",
+        },
+        expectedEmptyFields: ["email"],
+        expectedNotApplicableFields: ["allergies"],
+        requiredConcepts: ["Alex", "Tuesday", "$500", "3pm", "N/A"],
+        forbiddenConcepts: ["guessed email"],
+    },
+    {
+        kind: "forms-final",
+        name: "correction-overwrite",
+        transcript: [
+            "Issue priority is low.",
+            "Actually correct that, priority is high.",
+            "Site is warehouse B.",
+            "Technician is Sam.",
+            "Replacement hardware is not applicable because this is software only.",
+            "Notes should combine VPN timeout and login loop.",
+            "Contact phone is unknown.",
+        ].join(" "),
+        fields: [
+            { key: "priority", label: "Priority" },
+            { key: "site", label: "Site" },
+            { key: "technicianName", label: "Technician name" },
+            { key: "replacementRequired", label: "Replacement required" },
+            { key: "notes", label: "Notes" },
+            { key: "contactPhone", label: "Contact phone" },
+        ],
+        candidateAttributes: {
+            priority: "Low",
+            site: "Warehouse B",
+        },
+        expectedFinalAttributes: {
+            priority: "High",
+            site: "Warehouse B",
+            technicianName: "Sam",
+            replacementRequired: "N/A",
+            notes: "VPN timeout and login loop",
+            contactPhone: "",
+        },
+        expectedEmptyFields: ["contactPhone"],
+        expectedNotApplicableFields: ["replacementRequired"],
+        requiredConcepts: ["High", "Warehouse B", "Sam", "VPN timeout", "login loop"],
+        forbiddenConcepts: ["Low priority final value"],
+    },
+];
