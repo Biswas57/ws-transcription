@@ -38,6 +38,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-077 Remove stale backend comments and legacy compatibility residue | Completed | Removed unused historical cache/cost files, stale Groq/parser references, unused legacy dependencies, and misleading comments without changing runtime behaviour or contracts. |
 | T-081 Tune Responses output budgets for Notes final and transforms | Completed | Increased Notes final, Summarise, and Reorganise Responses output-budget headroom so medium reasoning is less likely to consume the whole visible-output budget and trigger `max_output_tokens` incompletes. Contracts, prompts, fallback behaviour, and safe diagnostics are unchanged. |
 | T-082 Explicitly disable OpenAI response storage | Completed | Set `store: false` on Responses calls through the central provider helper, set type-safe Chat Completions storage defaults where supported, added request-shape tests, and documented the OpenAI data-retention posture. |
+| T-096 Strengthen Summarise compression identity | Completed | Tuned Summarise so long notes become visibly shorter than Reorganise by merging related sections, reducing low-value subheadings, and preserving key process rules, warnings, decisions, actions, examples, and open questions. Hallucination avoidance and uncertainty preservation remain top priorities. |
 
 ## Active
 

@@ -69,7 +69,7 @@ You are given:
 
 YOUR TASK:
 Transform current visible notes only.
-Make the notes shorter, cleaner, and easier to review while mostly preserving the existing structure.
+Make the notes shorter, cleaner, and easier to review while preserving the existing structure where it is already useful, and simplifying it where it is overly detailed or repetitive.
 
 SOURCE-OF-TRUTH RULES:
 - Use only current_visible_notes.
@@ -78,11 +78,13 @@ SOURCE-OF-TRUTH RULES:
 - If current_visible_notes contain uncertainty, resolve it only when the answer is clearly present elsewhere in current_visible_notes.
 
 SUMMARISE REQUIREMENTS:
-- Preserve existing structure where possible.
-- Do not reorganise into a new structure unless the existing structure is clearly weak or duplicated.
+- Preserve existing structure where it improves reviewability.
+- Do not reorganise into a totally new structure unless the existing structure is clearly weak, duplicated, or overly granular.
 - For medium or long notes, produce a visibly shorter review version unless the notes are already extremely compact.
 - Long notes should usually be meaningfully shorter; do not force an exact percentage.
-- Around 60% of the original length is a practical lower target when useful, while concise notes may need little or no compression.
+- For long notes, a useful summary may be around 60-75% of the original length, but accuracy and reviewability are more important than hitting a fixed ratio.
+- For medium or long notes, reduce both wording and structure: combine related sections, reduce low-value subheadings where safe, and avoid preserving a one-to-one outline of the source.
+- The result should be clearly different from a reorganised version of the same notes: shorter wording, fewer repeated bullets, and fewer low-level subheadings where the source is long.
 - Dedupe repeated notes.
 - Remove repeated framing, duplicated explanation, transcript-like wording, and overly granular supporting detail.
 - Merge small or overlapping bullets where meaning is preserved.
@@ -90,8 +92,7 @@ SUMMARISE REQUIREMENTS:
 - Compress supporting detail while preserving key facts, dates, numbers, names, definitions, actions, caveats, risks, commands, IDs, technical terms, product names, and representative examples.
 - Clean phrasing.
 - Keep already clear and concise sections mostly unchanged.
-- Merge only extremely weak, duplicated, or clearly overlapping headings.
-- Preserve important facts, definitions, actions, caveats, risks, dates, numbers, commands, IDs, technical terms, product names, names, and relevant examples.
+- For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.
 - Preserve representative examples that explain or anchor a concept, but shorten long examples to their key point.
 - Remove irrelevant examples and obvious clutter.
 - Compress tangents, side segments, announcements, or off-topic-but-useful content more than the main content unless they are central to the note purpose.
