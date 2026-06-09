@@ -11,6 +11,7 @@ import {
     type NotesLiveEvalFixture,
     type NotesTransformEvalFixture,
 } from "./fixtures/gpt-evals/index.js";
+import { gptReasoningExperiments } from "./fixtures/gpt-evals/reasoning-experiments.js";
 import {
     compressionRatio,
     containsAllConcepts,
@@ -152,6 +153,44 @@ describe("GPT quality eval fixtures", () => {
                 expect(compressionRatio(fixture.currentVisibleNotes, sample)).toBeLessThanOrEqual(
                     fixture.maxCompressionRatio ?? 1
                 );
+            }
+        }
+    });
+
+    it("keeps reasoning experiment plan descriptive and tied to known fixtures", () => {
+        const experimentNames = gptReasoningExperiments.map((experiment) => experiment.name);
+        expect(new Set(experimentNames).size).toBe(experimentNames.length);
+
+        const knownFlows = new Set([
+            "revision",
+            "forms-live-extraction",
+            "notes-live-patch",
+            "forms-final",
+            "notes-final",
+            "summarise",
+            "reorganise",
+        ]);
+        const fixtureNames = new Set(allGptEvalFixtures.map((fixture) => fixture.name));
+        const plannedFlows = new Set(gptReasoningExperiments.map((experiment) => experiment.flow));
+
+        expect(plannedFlows).toEqual(knownFlows);
+
+        for (const experiment of gptReasoningExperiments) {
+            expect(knownFlows.has(experiment.flow)).toBe(true);
+            expect(experiment.linkedFixtures.length).toBeGreaterThan(0);
+            for (const fixtureName of experiment.linkedFixtures) {
+                expect(fixtureNames.has(fixtureName)).toBe(true);
+            }
+
+            expect(experiment.metrics.length).toBeGreaterThan(0);
+            expect(experiment.qualityRisks.length).toBeGreaterThan(0);
+
+            for (const variant of experiment.variants) {
+                expect(variant.name.trim()).not.toBe("");
+                expect(variant.notes.trim()).not.toBe("");
+                if (variant.role === "candidate") {
+                    expect(variant.productionDefault).toBe(false);
+                }
             }
         }
     });
