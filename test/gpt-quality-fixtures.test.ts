@@ -30,6 +30,10 @@ describe("GPT quality eval fixtures", () => {
         expect(notesFinalFixtures.map((fixture) => fixture.name)).toEqual([
             "rca-process-final",
             "short-study-final",
+            "notes-final-preserve-current-only-detail",
+            "notes-final-correction-overrides-current",
+            "notes-final-deduplicate-current-and-transcript",
+            "notes-final-drop-live-artefact",
         ]);
         expect(formsFinalFixtures.map((fixture) => fixture.name)).toEqual([
             "medical-intake-basic",
@@ -49,6 +53,7 @@ describe("GPT quality eval fixtures", () => {
             "summarise-rca-process",
             "summarise-long-meeting-actions",
             "summarise-study-repeated-detail",
+            "summarise-process-heavy-incident-review",
             "reorganise-rca-process",
         ]);
         expect(notesLiveFixtures.map((fixture) => fixture.name)).toEqual([
@@ -64,7 +69,7 @@ describe("GPT quality eval fixtures", () => {
             "notes-live-repeated-correction",
             "notes-live-tangent-with-action",
         ]);
-        expect(allGptEvalFixtures).toHaveLength(27);
+        expect(allGptEvalFixtures).toHaveLength(32);
     });
 
     it("uses unique fixture names", () => {
@@ -127,7 +132,7 @@ describe("GPT quality eval fixtures", () => {
         const summariseFixtures = notesTransformFixtures.filter(
             (fixture) => fixture.transform === "summarise"
         );
-        expect(summariseFixtures).toHaveLength(3);
+        expect(summariseFixtures).toHaveLength(4);
 
         for (const fixture of summariseFixtures) {
             expect(fixture.maxCompressionRatio).toBeGreaterThan(0);
@@ -158,6 +163,10 @@ describe("GPT quality eval fixtures", () => {
         const fixturesWithSamples = allGptEvalFixtures.filter(hasSampleGoodOutput);
 
         expect(fixturesWithSamples.map((fixture) => fixture.name)).toEqual([
+            "notes-final-preserve-current-only-detail",
+            "notes-final-correction-overrides-current",
+            "notes-final-deduplicate-current-and-transcript",
+            "notes-final-drop-live-artefact",
             "summarise-rca-process",
             "reorganise-rca-process",
             "early-patch-basic",

@@ -41,7 +41,7 @@ describe("OpenAI GPT eval runner", () => {
     it("selects live Chat baselines and Responses strict-schema candidates", () => {
         const cases = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined });
 
-        expect(cases).toHaveLength(54);
+        expect(cases).toHaveLength(64);
         expect(new Set(cases.map((evalCase) => evalCase.flow))).toEqual(
             new Set(supportedOpenAIEvalFlows)
         );
@@ -98,7 +98,11 @@ describe("OpenAI GPT eval runner", () => {
             OPENAI_EVAL_FLOWS: "summarise",
         });
 
-        expect(cases).toHaveLength(6);
+        const summariseFixtureCount = notesTransformFixtures.filter((fixture) =>
+            fixture.transform === "summarise"
+        ).length;
+
+        expect(cases).toHaveLength(summariseFixtureCount * 2);
         expect(cases.every((evalCase) => evalCase.flow === "summarise")).toBe(true);
     });
 

@@ -236,7 +236,14 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
     {
         name: "notes-final-model-reasoning",
         flow: "notes-final",
-        linkedFixtures: ["rca-process-final", "short-study-final"],
+        linkedFixtures: [
+            "rca-process-final",
+            "short-study-final",
+            "notes-final-preserve-current-only-detail",
+            "notes-final-correction-overrides-current",
+            "notes-final-deduplicate-current-and-transcript",
+            "notes-final-drop-live-artefact",
+        ],
         latencyClass: "user-waiting",
         qualityRisks: [
             "required facts are dropped",
@@ -281,6 +288,7 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
             "summarise-rca-process",
             "summarise-long-meeting-actions",
             "summarise-study-repeated-detail",
+            "summarise-process-heavy-incident-review",
         ],
         latencyClass: "background-ish-visible",
         qualityRisks: [

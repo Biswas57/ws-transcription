@@ -4,12 +4,12 @@
 
 T-085d/T-085e expanded the offline fixture coverage and ran the opt-in OpenAI evaluation matrix for the non-live final/transform flows before starting T-083 live Responses work.
 
-Low reasoning was faster and usually used fewer tokens, but the quality evidence is not strong enough to promote it for production final/transform calls. Keep current production defaults for now:
+Low reasoning was faster and usually used fewer tokens, but the T-085e decision gate was not strong enough to promote it broadly for production final/transform calls. The conservative defaults after that pass were:
 
 - Forms final: `gpt-5.4`, medium reasoning
 - Notes final: `gpt-5.4`, medium reasoning
 - Summarise: `gpt-5.4`, medium reasoning
-- Reorganise: `gpt-5.4`, medium reasoning
+- Reorganise: `gpt-5.4`, medium reasoning at the decision gate; T-116 later changed Reorganise to low with `FORMIFY_REORGANISE_REASONING=medium` rollback.
 
 No production model names, reasoning settings, prompts, schemas, provider routing, WebSocket contracts, or HTTP contracts were changed by this decision pass.
 
@@ -166,13 +166,46 @@ Calibrated result against the existing T-110a outputs:
 
 Decision: keep `gpt-5.4` + medium for Summarise. T-110/T-110b show the concept-preservation failure was mostly phrase-strict fixture matching, not clear content loss. However, do not claim Summarise is solved yet because the RCA fixture is still not compressed enough. Further prompt work should target compression without weakening the priority facts now recognised by the calibrated checks.
 
+## T-011a Current Notes Preservation Checker Calibration
+
+T-011a inspected paid Notes-final eval raw outputs written locally under `/tmp/formify-gpt-eval-outputs`.
+
+- Raw outputs committed: no
+- Production prompt changes: none
+- Model/reasoning changes: none
+- Runtime/provider changes: none
+
+The inspected outputs showed the current-notes preservation behaviour was qualitatively better than the deterministic pass/fail table suggested. Most failures were phrase-strict fixture matching rather than obvious content loss:
+
+- `notes-final-preserve-current-only-detail` preserved the Priya review-prep action with equivalent wording.
+- `notes-final-correction-overrides-current` correctly moved launch to Monday and preserved the legal-review reason while removing stale Friday timing.
+- `notes-final-deduplicate-current-and-transcript` preserved the Mei QA sign-off action and release blocker without duplicating the idea.
+- `notes-final-drop-live-artefact` removed broken live artefacts and preserved the Sam ownership detail in a concise final note.
+
+Fixture/checker changes:
+
+- Added narrow alternatives for equivalent T-011 wording such as `Priya owns preparation for the review meeting`, `launch has moved to Monday`, `legal review requires one more pass`, `Mei to complete QA sign-off before release`, `QA sign-off remains the release blocker`, and `Owner: Sam`.
+- Kept stale Friday launch, broken live artefact, filler, and duplicate-content checks strict.
+- Added a fixture-level concise-output allowance only for the tiny live-artefact cleanup case, where a short output is expected after removing invalid draft material.
+
+Decision: treat the T-011 paid eval as a qualitative pass after calibration. Continue using these fixtures as regression coverage for canonical-current-notes preservation, but do not use the old phrase-strict failures as evidence for another prompt or reasoning change.
+
+## T-114 Summarise Process-Heavy Fixture
+
+T-114 added `summarise-process-heavy-incident-review`, a synthetic process/RCA-style fixture focused on repeated procedure examples, support ownership, legal approval, communications ownership, security/compliance handling, and open questions.
+
+- Prompt change: added one process-specific compression rule for dense process or incident-review notes.
+- Model/reasoning changes: none
+- Opt-in eval rerun: no
+- Purpose: make future Summarise evals measure whether the prompt can compress repeated procedural detail while preserving governing rules, exceptions, owner/action facts, constraints, risks, and open questions.
+
 ## Reorganise Decision
 
-Keep medium reasoning for now.
+T-085e originally kept medium reasoning.
 
 Low passed the single Reorganise fixture and was faster, but one fixture is not enough evidence to change production defaults. Add more preservation fixtures before revisiting this.
 
-T-111 applied a controlled override instead of a default change. Reorganise still defaults to medium reasoning, while `FORMIFY_REORGANISE_REASONING=low` enables low reasoning for controlled testing and can be rolled back immediately by removing the env var or setting it to `medium`.
+T-111 applied a controlled override instead of a default change. T-116 later made Reorganise low reasoning the default because the transform is user-reviewed and lower-risk than final notes. `FORMIFY_REORGANISE_REASONING=medium` is the immediate rollback path.
 
 ## Recommendation Before T-083
 
@@ -186,4 +219,12 @@ T-083 should stay scoped to live-path evaluation:
 
 ## Production Change Status
 
-No production defaults were changed by T-085d/T-085e. T-110/T-111 later tightened the Summarise prompt and added an explicit Reorganise low-reasoning override without changing the default model/reasoning settings.
+No production defaults were changed by T-085d/T-085e. T-110/T-111 later tightened the Summarise prompt and added an explicit Reorganise low-reasoning override. T-116 later made Reorganise low reasoning the default while keeping Forms final, Notes final, and Summarise on medium.
+
+## T-117 Summarise Process/RCA Compression
+
+T-117 kept Summarise on `gpt-5.4` + medium reasoning and tightened only the prompt guidance for dense process, RCA, incident-review, support, and training notes.
+
+- Keep governing rules, exceptions, owner/action facts, constraints, risks, deadlines, and open questions.
+- Remove repeated step-by-step explanation and repeated examples.
+- Merge many similar procedural bullets by preserving the rule once and summarising the rest.
