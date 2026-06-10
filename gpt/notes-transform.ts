@@ -11,6 +11,7 @@ import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
 import {
     formatSafeJsonKeys,
+    recordUsageEvent,
     safeErrorInfo,
     safeJsonKeys,
     safeLogValue,
@@ -43,7 +44,6 @@ export type NotesTransformErrorDetails = {
     outputChars?: number;
     jsonKeys?: string[];
     expectedKey?: string;
-    usedAliasKey?: string;
     incompleteReason?: string;
 };
 
@@ -221,8 +221,7 @@ export const NOTES_REORGANISE_RESPONSE_SCHEMA = {
 
 export function parseNotesTransformMarkdown(
     content: string,
-    key: "summaryMarkdown" | "reorganisedMarkdown",
-    aliasKeys: string[] = []
+    key: "summaryMarkdown" | "reorganisedMarkdown"
 ): string {
     const cleanedContent = extractJsonObjectText(content);
     const outputChars = content.length;
@@ -253,33 +252,7 @@ export function parseNotesTransformMarkdown(
 
     const parsedObject = parsed as Record<string, unknown>;
     const jsonKeys = safeJsonKeys(parsedObject);
-    let value = parsedObject[key];
-    let usedAliasKey: string | undefined;
-
-    if (typeof value !== "string") {
-        for (const aliasKey of aliasKeys) {
-            if (typeof parsedObject[aliasKey] === "string") {
-                value = parsedObject[aliasKey];
-                usedAliasKey = aliasKey;
-                break;
-            }
-        }
-    }
-
-    const acceptedKey = usedAliasKey ?? key;
-    if (typeof value === "string" && (jsonKeys.length !== 1 || jsonKeys[0] !== acceptedKey)) {
-        throw new NotesTransformError(
-            "transform-output-unexpected-key",
-            "Transform response included unexpected keys.",
-            {
-                stage: "unexpected-key",
-                outputChars,
-                jsonKeys,
-                expectedKey: key,
-                usedAliasKey,
-            }
-        );
-    }
+    const value = parsedObject[key];
 
     if (typeof value !== "string") {
         throw new NotesTransformError(
@@ -287,6 +260,19 @@ export function parseNotesTransformMarkdown(
             `Transform response missing ${key}.`,
             {
                 stage: "missing-key",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+            }
+        );
+    }
+
+    if (jsonKeys.length !== 1 || jsonKeys[0] !== key) {
+        throw new NotesTransformError(
+            "transform-output-unexpected-key",
+            "Transform response included unexpected keys.",
+            {
+                stage: "unexpected-key",
                 outputChars,
                 jsonKeys,
                 expectedKey: key,
@@ -304,7 +290,6 @@ export function parseNotesTransformMarkdown(
                 outputChars,
                 jsonKeys,
                 expectedKey: key,
-                usedAliasKey,
             }
         );
     }
@@ -318,16 +303,7 @@ export function parseNotesTransformMarkdown(
                 outputChars,
                 jsonKeys,
                 expectedKey: key,
-                usedAliasKey,
             }
-        );
-    }
-
-    if (usedAliasKey) {
-        console.warn(
-            `[notes-transform] Accepted alias output key — ` +
-            `expectedKey: ${key}, aliasKey: ${usedAliasKey}, ` +
-            `jsonKeys: ${formatSafeJsonKeys(jsonKeys)}, outputChars: ${outputChars}`
         );
     }
 
@@ -349,7 +325,6 @@ function formatNotesTransformError(err: NotesTransformError): string {
         parts.push(`outputChars=${err.details.outputChars}`);
     }
     if (err.details.expectedKey) parts.push(`expectedKey=${err.details.expectedKey}`);
-    if (err.details.usedAliasKey) parts.push(`usedAliasKey=${err.details.usedAliasKey}`);
     if (err.details.incompleteReason) parts.push(`incompleteReason=${safeLogValue(err.details.incompleteReason)}`);
     if (err.details.jsonKeys) parts.push(`jsonKeys=${formatSafeJsonKeys(err.details.jsonKeys)}`);
 
@@ -363,6 +338,15 @@ export async function generateNotesSummary(
     const notesMarkdown = args.notesMarkdown.trim();
     const inputTokens = countTokens(notesMarkdown);
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER);
+    recordUsageEvent("notes_transform_start", {
+        flow: "summarise",
+        provider: "responses",
+        model: GPT_FINAL_MODEL,
+        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        inputChars: notesMarkdown.length,
+        inputTokens,
+        maxOutputTokens,
+    });
 
     try {
         const response = await runOpenAIResponsesJson({
@@ -408,11 +392,7 @@ export async function generateNotesSummary(
             );
         }
 
-        const summaryMarkdown = parseNotesTransformMarkdown(
-            content,
-            "summaryMarkdown",
-            ["notesMarkdown", "markdown", "outputMarkdown"]
-        );
+        const summaryMarkdown = parseNotesTransformMarkdown(content, "summaryMarkdown");
         console.log(
             `[notes-transform-summary] Complete — ` +
             `inputChars: ${notesMarkdown.length}, ` +
@@ -421,9 +401,32 @@ export async function generateNotesSummary(
             `maxOutputTokens: ${maxOutputTokens}, ` +
             `duration: ${Date.now() - transformStart}ms`
         );
+        recordUsageEvent("notes_transform_complete", {
+            flow: "summarise",
+            provider: "responses",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            inputChars: notesMarkdown.length,
+            outputChars: summaryMarkdown.length,
+            inputTokens,
+            maxOutputTokens,
+            durationMs: Date.now() - transformStart,
+            responseInputTokens: response.usage.inputTokens,
+            responseOutputTokens: response.usage.outputTokens,
+            responseReasoningTokens: response.usage.reasoningTokens,
+            responseTotalTokens: response.usage.totalTokens,
+        });
         return { summaryMarkdown };
     } catch (err) {
         if (isNotesTransformError(err)) {
+            recordUsageEvent("notes_transform_failed", {
+                flow: "summarise",
+                code: err.code,
+                stage: err.details.stage,
+                inputChars: notesMarkdown.length,
+                outputChars: err.details.outputChars,
+                durationMs: Date.now() - transformStart,
+            });
             console.warn(
                 `[notes-transform-summary] Invalid output — ` +
                 `inputChars: ${notesMarkdown.length}, ` +
@@ -433,6 +436,13 @@ export async function generateNotesSummary(
             throw err;
         }
 
+        recordUsageEvent("notes_transform_failed", {
+            flow: "summarise",
+            code: "transform-provider-error",
+            stage: "provider-error",
+            inputChars: notesMarkdown.length,
+            durationMs: Date.now() - transformStart,
+        });
         console.error(
             `[notes-transform-summary] Error — ` +
             `inputChars: ${notesMarkdown.length}, ` +
@@ -457,12 +467,23 @@ export async function generateNotesReorganisation(
     const targetSections = args.targetSections ?? [];
     const inputTokens = countTokens(notesMarkdown);
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER);
+    const reasoningEffort = reorganiseReasoningEffort();
+    recordUsageEvent("notes_transform_start", {
+        flow: "reorganise",
+        provider: "responses",
+        model: GPT_FINAL_MODEL,
+        reasoningEffort,
+        inputChars: notesMarkdown.length,
+        inputTokens,
+        targetSectionCount: targetSections.length,
+        maxOutputTokens,
+    });
 
     try {
         const response = await runOpenAIResponsesJson({
             label: "notes-transform-reorganise",
             model: GPT_FINAL_MODEL,
-            reasoningEffort: reorganiseReasoningEffort(),
+            reasoningEffort,
             instructions: NOTES_REORGANISE_SYS_TXT,
             input: JSON.stringify({
                 note_style: args.noteStyle,
@@ -526,9 +547,34 @@ export async function generateNotesReorganisation(
             `maxOutputTokens: ${maxOutputTokens}, ` +
             `duration: ${Date.now() - transformStart}ms`
         );
+        recordUsageEvent("notes_transform_complete", {
+            flow: "reorganise",
+            provider: "responses",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort,
+            inputChars: notesMarkdown.length,
+            outputChars: reorganisedMarkdown.length,
+            inputTokens,
+            maxOutputTokens,
+            targetSectionCount: targetSections.length,
+            durationMs: Date.now() - transformStart,
+            responseInputTokens: response.usage.inputTokens,
+            responseOutputTokens: response.usage.outputTokens,
+            responseReasoningTokens: response.usage.reasoningTokens,
+            responseTotalTokens: response.usage.totalTokens,
+        });
         return { reorganisedMarkdown };
     } catch (err) {
         if (isNotesTransformError(err)) {
+            recordUsageEvent("notes_transform_failed", {
+                flow: "reorganise",
+                code: err.code,
+                stage: err.details.stage,
+                inputChars: notesMarkdown.length,
+                outputChars: err.details.outputChars,
+                targetSectionCount: targetSections.length,
+                durationMs: Date.now() - transformStart,
+            });
             console.warn(
                 `[notes-transform-reorganise] Invalid output — ` +
                 `inputChars: ${notesMarkdown.length}, ` +
@@ -539,6 +585,14 @@ export async function generateNotesReorganisation(
             throw err;
         }
 
+        recordUsageEvent("notes_transform_failed", {
+            flow: "reorganise",
+            code: "transform-provider-error",
+            stage: "provider-error",
+            inputChars: notesMarkdown.length,
+            targetSectionCount: targetSections.length,
+            durationMs: Date.now() - transformStart,
+        });
         console.error(
             `[notes-transform-reorganise] Error — ` +
             `inputChars: ${notesMarkdown.length}, ` +

@@ -8,6 +8,11 @@ export type SafeUsageMetadata = {
     totalTokens?: number;
 };
 
+export type SafeUsageEventMetadata = Record<
+    string,
+    string | number | boolean | null | undefined
+>;
+
 export function safeErrorInfo(err: unknown): string {
     if (!err || typeof err !== "object") return `type=${typeof err}`;
 
@@ -77,6 +82,42 @@ export function safeUsageMetadata(usage: unknown): SafeUsageMetadata {
     };
 }
 
+export function formatUsageEvent(
+    eventName: string,
+    metadata: SafeUsageEventMetadata = {}
+): string {
+    const event = safeUsageString(eventName) ?? "unknown";
+    const parts = [`event: ${event}`];
+
+    for (const [rawKey, value] of Object.entries(metadata)) {
+        if (value === null || value === undefined) continue;
+        const key = safeLogValue(rawKey);
+        if (!key) continue;
+
+        if (typeof value === "number") {
+            if (Number.isFinite(value)) parts.push(`${key}: ${value}`);
+            continue;
+        }
+
+        if (typeof value === "boolean") {
+            parts.push(`${key}: ${value}`);
+            continue;
+        }
+
+        const safeValue = safeUsageString(value);
+        if (safeValue) parts.push(`${key}: ${safeValue}`);
+    }
+
+    return `[usage] ${parts.join(", ")}`;
+}
+
+export function recordUsageEvent(
+    eventName: string,
+    metadata: SafeUsageEventMetadata = {}
+): void {
+    console.log(formatUsageEvent(eventName, metadata));
+}
+
 export function shortHash(value: string): string {
     return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
@@ -89,4 +130,11 @@ function safeRecord(value: unknown): Record<string, unknown> | undefined {
 
 function safeNumber(value: unknown): number | undefined {
     return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function safeUsageString(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 80) return null;
+    if (!/^[A-Za-z0-9_.:-]+$/.test(trimmed)) return null;
+    return trimmed;
 }

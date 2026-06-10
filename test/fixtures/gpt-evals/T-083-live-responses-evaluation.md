@@ -275,6 +275,78 @@ T-113 added canary-readiness guardrails around the runtime candidate. The backen
 
 T-115 later switched Notes live to the Responses strict-schema path by default. Rollback remains immediate with `FORMIFY_NOTES_LIVE_PROVIDER=chat`; `FORMIFY_NOTES_LIVE_PROVIDER=responses` explicitly selects the default Responses path.
 
+## T-094/T-094a Bounded Context Note
+
+A later paid full eval run after T-094 showed Notes live quality remained strong:
+Responses passed all Notes live fixtures in that run, while Chat missed the
+fallback-section and lecture-topic-shift cases. That run is useful for Notes
+live quality, latency, output-shape, and safety-filter evidence.
+
+Do not use that pre-T-094a run as proof of bounded live context savings. The
+Notes live paid eval runner still built its input directly from fixture
+`currentNotes` at that time. T-094a aligns the paid eval runner with the runtime
+`buildNotesLivePatchRequest(...)` path, so rerun `OPENAI_EVAL_FLOWS=notes-live`
+when a paid bounded-context check is needed.
+
+## T-094b Notes Live Bounded Context Paid Eval
+
+### Eval Execution
+
+- Date: 2026-06-10
+- Flow: Notes live only
+- Provider cases: 22
+- Command used:
+
+```bash
+NODE_EXTRA_CA_CERTS=/tmp/macos-certs.pem OPENAI_EVALS=1 OPENAI_EVAL_FLOWS=notes-live OPENAI_EVALS_WRITE_OUTPUTS=1 OPENAI_EVALS_OUTPUT_DIR=/tmp/formify-gpt-eval-outputs-t094b-notes-live pnpm exec vitest run test/gpt-openai-evals.test.ts
+```
+
+- Raw output path: `/tmp/formify-gpt-eval-outputs-t094b-notes-live`
+- Raw outputs committed: no
+- Test result: passed, 21 tests
+
+### Quality Results
+
+| Variant | Cases | Passes | Pass rate | Avg duration | Avg total tokens | Notes |
+| ------- | ----: | -----: | --------: | -----------: | ---------------: | ----- |
+| `current-chat-mini-low` | 11 | 9 | 81.8% | 1945ms | 1398 | Missed fallback/new-section placement on two fixtures; one 4823ms duration outlier. |
+| `candidate-responses-mini-low` | 11 | 10 | 90.9% | 1928ms | 1480 | Passed fallback-section placement; missed one lecture topic-shift fixture; one 5272ms duration outlier. |
+
+### Bounded Context Metadata
+
+| Fixture | Variant | Original current notes chars | Context chars | Saved chars | Compacted | Heading count |
+| ------- | ------- | ---------------------------: | ------------: | ----------: | --------- | ------------: |
+| `early-patch-basic` | `current-chat-mini-low` | 0 | 0 | 0 | false | 0 |
+| `early-patch-basic` | `candidate-responses-mini-low` | 0 | 0 | 0 | false | 0 |
+| `side-topic-repetition` | `current-chat-mini-low` | 113 | 113 | 0 | false | 1 |
+| `side-topic-repetition` | `candidate-responses-mini-low` | 113 | 113 | 0 | false | 1 |
+| `notes-live-long-current-notes` | `current-chat-mini-low` | 6408 | 4313 | 2095 | true | 21 |
+| `notes-live-long-current-notes` | `candidate-responses-mini-low` | 6408 | 4313 | 2095 | true | 21 |
+| `notes-live-heading-reuse` | `current-chat-mini-low` | 101 | 101 | 0 | false | 2 |
+| `notes-live-heading-reuse` | `candidate-responses-mini-low` | 101 | 101 | 0 | false | 2 |
+| `notes-live-fallback-section` | `current-chat-mini-low` | 69 | 69 | 0 | false | 1 |
+| `notes-live-fallback-section` | `candidate-responses-mini-low` | 69 | 69 | 0 | false | 1 |
+| `notes-live-unsafe-or-repeated` | `current-chat-mini-low` | 115 | 115 | 0 | false | 1 |
+| `notes-live-unsafe-or-repeated` | `candidate-responses-mini-low` | 115 | 115 | 0 | false | 1 |
+| `notes-live-side-topic-main-topic-balance` | `current-chat-mini-low` | 83 | 83 | 0 | false | 1 |
+| `notes-live-side-topic-main-topic-balance` | `candidate-responses-mini-low` | 83 | 83 | 0 | false | 1 |
+| `notes-live-long-meeting-rolling-context` | `current-chat-mini-low` | 404 | 404 | 0 | false | 3 |
+| `notes-live-long-meeting-rolling-context` | `candidate-responses-mini-low` | 404 | 404 | 0 | false | 3 |
+| `notes-live-lecture-topic-shift` | `current-chat-mini-low` | 197 | 197 | 0 | false | 2 |
+| `notes-live-lecture-topic-shift` | `candidate-responses-mini-low` | 197 | 197 | 0 | false | 2 |
+| `notes-live-repeated-correction` | `current-chat-mini-low` | 87 | 87 | 0 | false | 1 |
+| `notes-live-repeated-correction` | `candidate-responses-mini-low` | 87 | 87 | 0 | false | 1 |
+| `notes-live-tangent-with-action` | `current-chat-mini-low` | 112 | 112 | 0 | false | 2 |
+| `notes-live-tangent-with-action` | `candidate-responses-mini-low` | 112 | 112 | 0 | false | 2 |
+
+### Decision
+
+The current runtime state already defaults Notes live to Responses with Chat
+fallback. This T-094b run supports keeping that default: Responses passed more
+Notes live cases than Chat and the bounded-context metadata is now visible in
+paid eval summaries. Continue watching safe production diagnostics for fallback
+rate, incomplete responses, long-tail latency, and topic-shift misses.
+
 ## Decision
 
 Keep production Chat live paths at the T-083/T-090 decision point. T-115 later switched Notes live to Responses by default with Chat rollback.

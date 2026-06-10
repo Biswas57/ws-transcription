@@ -8,7 +8,7 @@ import {
 } from "./model-config.js";
 import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
-import { formatSafeJsonKeys, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
+import { formatSafeJsonKeys, recordUsageEvent, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
 
 export const NOTES_FINAL_SYS_TXT = `\
 You are a professional note editor in an Australian context.
@@ -141,6 +141,19 @@ export async function finalizeNotes(
     const wasTruncated = fullTranscript.length > NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT;
     const inputTokens = countTokens(truncated) + countTokens(currentNotes);
     const maxOutputTokens = notesFinalOutputBudget(inputTokens);
+    recordUsageEvent("notes_final_start", {
+        flow: "notes-final",
+        provider: "responses",
+        model: GPT_FINAL_MODEL,
+        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        transcriptChars: fullTranscript.length,
+        truncatedChars: truncated.length,
+        currentNotesChars: currentNotes.length,
+        sectionsCount: sections.length,
+        inputTokens,
+        maxOutputTokens,
+        truncated: wasTruncated,
+    });
     console.log(
         `[notes-final] Context — ` +
         `model: ${GPT_FINAL_MODEL}, ` +
@@ -177,6 +190,15 @@ export async function finalizeNotes(
         });
 
         if (response.status === "incomplete") {
+            recordUsageEvent("notes_final_failed", {
+                flow: "notes-final",
+                reason: "incomplete",
+                transcriptChars: fullTranscript.length,
+                currentNotesChars: currentNotes.length,
+                outputChars: response.outputText.length,
+                durationMs: response.durationMs,
+                incompleteReason: response.incompleteReason ?? undefined,
+            });
             console.warn(
                 `[notes-final] Incomplete response, returning current notes — ` +
                 `outputChars: ${response.outputText.length}, ` +
@@ -188,6 +210,13 @@ export async function finalizeNotes(
 
         const content = response.outputText;
         if (!content) {
+            recordUsageEvent("notes_final_failed", {
+                flow: "notes-final",
+                reason: "empty-output",
+                transcriptChars: fullTranscript.length,
+                currentNotesChars: currentNotes.length,
+                outputChars: 0,
+            });
             console.warn("[notes-final] Empty response, returning current notes");
             return currentNotes;
         }
@@ -195,6 +224,13 @@ export async function finalizeNotes(
         const parsed = JSON.parse(extractJsonObjectText(content)) as { notesMarkdown?: string };
         const parsedKeys = safeJsonKeys(parsed);
         if (parsedKeys.length !== 1 || parsedKeys[0] !== "notesMarkdown") {
+            recordUsageEvent("notes_final_failed", {
+                flow: "notes-final",
+                reason: "schema-failed",
+                transcriptChars: fullTranscript.length,
+                currentNotesChars: currentNotes.length,
+                outputChars: content.length,
+            });
             console.warn(
                 `[notes-final] Unexpected response keys, returning current — ` +
                 `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
@@ -203,12 +239,41 @@ export async function finalizeNotes(
         }
         const finalized = parsed.notesMarkdown?.trim();
         if (!finalized) {
+            recordUsageEvent("notes_final_failed", {
+                flow: "notes-final",
+                reason: "missing-key",
+                transcriptChars: fullTranscript.length,
+                currentNotesChars: currentNotes.length,
+                outputChars: content.length,
+            });
             console.warn("[notes-final] Missing notesMarkdown key, returning current");
             return currentNotes;
         }
         console.log(`[notes-final] ${GPT_FINAL_MODEL} pass complete: ${finalized.length} chars`);
+        recordUsageEvent("notes_final_complete", {
+            flow: "notes-final",
+            provider: "responses",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            transcriptChars: fullTranscript.length,
+            truncatedChars: truncated.length,
+            currentNotesChars: currentNotes.length,
+            outputChars: finalized.length,
+            durationMs: response.durationMs,
+            inputTokens: response.usage.inputTokens,
+            cachedInputTokens: response.usage.cachedInputTokens,
+            outputTokens: response.usage.outputTokens,
+            reasoningTokens: response.usage.reasoningTokens,
+            totalTokens: response.usage.totalTokens,
+        });
         return finalized;
     } catch (err) {
+        recordUsageEvent("notes_final_failed", {
+            flow: "notes-final",
+            reason: "exception",
+            transcriptChars: fullTranscript.length,
+            currentNotesChars: currentNotes.length,
+        });
         console.error(`[notes-final] Error — ${safeErrorInfo(err)}`);
         return currentNotes;
     }

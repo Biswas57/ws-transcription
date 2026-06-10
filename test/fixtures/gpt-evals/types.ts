@@ -75,9 +75,26 @@ export type NotesLiveEvalFixture = {
     sampleGoodOutput?: string;
 };
 
+export type LongSessionEvalStep = {
+    elapsedMs: number;
+    pendingTranscript: string;
+    sampleAppendMarkdown: string;
+};
+
+export type LongSessionEvalFixture = {
+    kind: "long-session";
+    name: string;
+    noteStyle: string;
+    description: string;
+    initialCurrentNotes: string;
+    steps: LongSessionEvalStep[];
+    expectedGrowthRisk: string[];
+};
+
 export type GptEvalFixture =
     | NotesFinalEvalFixture
     | FormsFinalEvalFixture
     | FormsLiveEvalFixture
     | NotesTransformEvalFixture
-    | NotesLiveEvalFixture;
+    | NotesLiveEvalFixture
+    | LongSessionEvalFixture;

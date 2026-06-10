@@ -19,7 +19,7 @@ import {
     appendWithOverlap,
 } from "../transcription.js";
 import { reviseTranscription, extractAttributesFromText, parseFinalAttributes } from "../parse-gpt.js";
-import { safeErrorInfo } from "../safe-log.js";
+import { recordUsageEvent, safeErrorInfo } from "../safe-log.js";
 
 function normalizeKey(key: string): string {
     return key.trim().toLowerCase().replace(/[\s\-]+/g, "_");
@@ -76,6 +76,11 @@ export class FormFillHandler implements TranscriptionHandler {
         }
 
         console.log(`[${this.sessionId}][forms] Session start — ${this.st.template.length} fields across ${Object.keys(payload.blocks ?? {}).length} blocks`);
+        recordUsageEvent("recording_session_start", {
+            mode: "forms",
+            templateFields: this.st.template.length,
+            blockCount: Object.keys(payload.blocks ?? {}).length,
+        });
         this.send({ type: "started", mode: "forms" });
     }
 
@@ -98,6 +103,17 @@ export class FormFillHandler implements TranscriptionHandler {
                     `queue: ${this.queue.size} queued, ${this.queue.pending} pending, ` +
                     `maxJobs: ${MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS}`
                 );
+                recordUsageEvent("recording_queue_overloaded", {
+                    mode: "forms",
+                    queueSize: this.queue.size,
+                    queuePending: this.queue.pending,
+                    queueLoad: this.queueLoad(),
+                    maxJobs: MAX_FORMS_TRANSCRIPTION_QUEUE_JOBS,
+                    elapsedSessionMs: Date.now() - this.sessionStartedAt,
+                    audioBufferBytes: this.st.audioBuffer.length,
+                    incomingChunkBytes: chunk.length,
+                    overloadSignaled: this.overloadSignaled,
+                });
                 this.send({
                     type: "error",
                     code: "transcription-overloaded",
@@ -136,6 +152,16 @@ export class FormFillHandler implements TranscriptionHandler {
         const passNum = ++this.passCount;
         const queueSizeAtEnqueue = this.queue.size;
         const queuePendingAtEnqueue = this.queue.pending;
+        recordUsageEvent("transcription_batch_accepted", {
+            mode: "forms",
+            reason: "batch",
+            passNum,
+            audioBufferBytes: captureSize,
+            chunkCount: captureChunkCount,
+            queueSize: queueSizeAtEnqueue,
+            queuePending: queuePendingAtEnqueue,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+        });
 
         this.queue.add(async () => {
             if (this.closed) return;
@@ -175,6 +201,16 @@ export class FormFillHandler implements TranscriptionHandler {
                         `[${this.sessionId}][forms] Pass ${passNum} skipped — ` +
                         `emptyOrNoise: true, revisedChars: ${revised.trim().length}, passMs: ${passMs}`
                     );
+                    recordUsageEvent("transcription_batch_processed", {
+                        mode: "forms",
+                        reason: "batch",
+                        passNum,
+                        skipped: true,
+                        emptyOrNoise: true,
+                        rawChars,
+                        revisedChars: revised.trim().length,
+                        durationMs: passMs,
+                    });
                     return;
                 }
 
@@ -195,10 +231,27 @@ export class FormFillHandler implements TranscriptionHandler {
                     `[${this.sessionId}][forms] Pass ${passNum} complete — ` +
                     `extract: ${extractMs}ms, attrsReturned: ${attrsReturned}, passMs: ${passMs}`
                 );
+                recordUsageEvent("transcription_batch_processed", {
+                    mode: "forms",
+                    reason: "batch",
+                    passNum,
+                    skipped: false,
+                    rawChars,
+                    revisedChars,
+                    attrsReturned,
+                    cumulativeTranscriptChars: st.transcript.length,
+                    durationMs: passMs,
+                });
 
                 this.send({ type: "attributes_update", attributes: st.currAttributes });
 
             } catch (e) {
+                recordUsageEvent("transcription_batch_failed", {
+                    mode: "forms",
+                    reason: "batch",
+                    passNum,
+                    durationMs: Date.now() - passStart,
+                });
                 console.error(
                     `[${this.sessionId}][forms] Pass ${passNum} failed — ` +
                     `passMs: ${Date.now() - passStart}ms, error: ${safeErrorInfo(e)}`
@@ -224,6 +277,15 @@ export class FormFillHandler implements TranscriptionHandler {
             `[${this.sessionId}][forms] Stop received — ` +
             `queueSize: ${queueSizeAtStop}, queuePending: ${queuePendingAtStop}`
         );
+        recordUsageEvent("recording_stop_start", {
+            mode: "forms",
+            stopReason: "client",
+            queueSize: queueSizeAtStop,
+            queuePending: queuePendingAtStop,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+            transcriptChars: st.transcript.length,
+            templateFields: st.template.length,
+        });
 
         const drainStart = Date.now();
         await this.queue.onIdle();
@@ -311,6 +373,17 @@ export class FormFillHandler implements TranscriptionHandler {
                 `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
                 `session: ${Math.round(sessionMs / 1000)}s, finalAttrCount: ${finalAttrCount}`
             );
+            recordUsageEvent("recording_finalisation_complete", {
+                mode: "forms",
+                stopReason: "client",
+                finalMs,
+                stopToDoneMs: stopMs,
+                elapsedSessionMs: sessionMs,
+                transcriptChars: st.transcript.length,
+                templateFields: st.template.length,
+                finalAttrCount,
+                passCount: this.passCount,
+            });
 
             this.finalSent = true;
             this.send({ type: "final_attributes", attributes: st.currAttributes });
@@ -322,6 +395,14 @@ export class FormFillHandler implements TranscriptionHandler {
                 `[${this.sessionId}][forms] Final extraction error — ` +
                 `finalExtract: ${finalMs}ms, stop-to-done: ${stopMs}ms, error: ${safeErrorInfo(err)}`
             );
+            recordUsageEvent("recording_finalisation_failed", {
+                mode: "forms",
+                stopReason: "client",
+                finalMs,
+                stopToDoneMs: stopMs,
+                transcriptChars: st.transcript.length,
+                templateFields: st.template.length,
+            });
             this.finalSent = true;
             this.send({ type: "final_attributes", attributes: st.currAttributes });
         }
@@ -333,6 +414,13 @@ export class FormFillHandler implements TranscriptionHandler {
         this.isStopping = true;
         this.queue.clear();
         console.log(`[${this.sessionId}][forms] Handler closed`);
+        recordUsageEvent("recording_session_closed", {
+            mode: "forms",
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+            queueSize: this.queue.size,
+            queuePending: this.queue.pending,
+            finalSent: this.finalSent,
+        });
     }
 
     private queueLoad(): number {

@@ -37,6 +37,7 @@ import {
     getNotesLiveProviderMode,
     reorganiseReasoningEffort,
 } from "../gpt/model-config.js";
+import { buildNotesLivePatchRequest } from "../gpt/notes-live.js";
 
 const ORIGINAL_REORGANISE_REASONING = process.env.FORMIFY_REORGANISE_REASONING;
 const ORIGINAL_NOTES_LIVE_PROVIDER = process.env.FORMIFY_NOTES_LIVE_PROVIDER;
@@ -343,6 +344,48 @@ describe("parse-gpt stabilisation", () => {
         expectNoPromptExcludedLanguage(instructions);
     });
 
+    it("builds bounded current-notes context for long Notes live patch requests", () => {
+        const request = buildNotesLivePatchRequest(
+            "The newest segment adds one action item.",
+            LONG_NOTES,
+            "meeting",
+            ["Actions"]
+        );
+        const input = JSON.parse(request.input) as {
+            current_notes: string;
+            transcript_segment: string;
+        };
+
+        expect(request.currentNotesChars).toBe(LONG_NOTES.length);
+        expect(request.contextCompacted).toBe(true);
+        expect(request.currentNotesContextChars).toBeLessThan(request.currentNotesChars);
+        expect(request.contextSavedChars).toBeGreaterThan(0);
+        expect(request.headingCount).toBeGreaterThan(0);
+        expect(input.current_notes.length).toBe(request.currentNotesContextChars);
+        expect(input.current_notes).toContain("Compact current notes context for live patching");
+        expect(input.current_notes).toContain("## Existing note outline");
+        expect(input.current_notes).toContain("## Recent note tail");
+        expect(input.current_notes).not.toContain("Detailed note 0 captures");
+        expect(input.transcript_segment).toBe("The newest segment adds one action item.");
+    });
+
+    it("keeps short current notes unchanged in Notes live patch requests", () => {
+        const current = "## Decisions\n\n- Existing decision.";
+        const request = buildNotesLivePatchRequest(
+            "The newest segment adds one action item.",
+            current,
+            "meeting",
+            ["Decisions"]
+        );
+        const input = JSON.parse(request.input) as { current_notes: string };
+
+        expect(request.currentNotesChars).toBe(current.length);
+        expect(request.currentNotesContextChars).toBe(current.length);
+        expect(request.contextCompacted).toBe(false);
+        expect(request.contextSavedChars).toBe(0);
+        expect(input.current_notes).toBe(current);
+    });
+
     it("keeps current notes unchanged when notes incremental patch JSON is invalid", async () => {
         process.env.FORMIFY_NOTES_LIVE_PROVIDER = "chat";
         openAiMock.create.mockResolvedValueOnce({
@@ -387,6 +430,42 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
         expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
+    });
+
+    it("passes bounded current-notes context through the Chat live rollback path", async () => {
+        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "chat";
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{
+                message: {
+                    content: JSON.stringify({
+                        updates: [{
+                            targetHeading: "Actions",
+                            targetLevel: 2,
+                            appendMarkdown: "- Chat path used bounded context.",
+                        }],
+                    }),
+                },
+            }],
+        });
+
+        await expect(generateNotesIncrementalPatch(
+            "Chat path used bounded context.",
+            LONG_NOTES,
+            "meeting",
+            ["Actions"]
+        )).resolves.toMatchObject({
+            updates: [{
+                targetHeading: "Actions",
+                targetLevel: 2,
+                appendMarkdown: "- Chat path used bounded context.",
+            }],
+        });
+
+        const request = openAiMock.create.mock.calls[0][0];
+        const input = JSON.parse(request.messages[1].content) as { current_notes: string };
+        expect(input.current_notes).toContain("Compact current notes context for live patching");
+        expect(input.current_notes.length).toBeLessThan(LONG_NOTES.length);
+        expect(input.current_notes).not.toContain("Detailed note 0 captures");
     });
 
     it("resolves Notes live provider mode from env with Responses as the default", () => {
@@ -474,6 +553,51 @@ describe("parse-gpt stabilisation", () => {
             additionalProperties: false,
             required: ["updates", "fallbackAppendMarkdown"],
         });
+    });
+
+    it("passes bounded current-notes context through the Responses live path", async () => {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({
+                updates: [{
+                    targetHeading: "Actions",
+                    targetLevel: 2,
+                    appendMarkdown: "- Responses path used bounded context.",
+                }],
+                fallbackAppendMarkdown: "",
+            }))
+        );
+
+        try {
+            await expect(generateNotesIncrementalPatch(
+                "Responses path used bounded context.",
+                LONG_NOTES,
+                "meeting",
+                ["Actions"]
+            )).resolves.toMatchObject({
+                updates: [{
+                    targetHeading: "Actions",
+                    targetLevel: 2,
+                    appendMarkdown: "- Responses path used bounded context.",
+                }],
+            });
+
+            const request = openAiMock.responsesCreate.mock.calls[0][0];
+            const input = JSON.parse(request.input) as { current_notes: string };
+            expect(input.current_notes).toContain("Compact current notes context for live patching");
+            expect(input.current_notes.length).toBeLessThan(LONG_NOTES.length);
+            expect(input.current_notes).not.toContain("Detailed note 0 captures");
+
+            const logs = logSpy.mock.calls.flat().join("\n");
+            expect(logs).toContain("notes-live-context-compacted");
+            expect(logs).toContain("originalChars");
+            expect(logs).toContain("contextChars");
+            expect(logs).toContain("savedChars");
+            expect(logs).not.toContain("Detailed note 0 captures");
+            expect(logs).not.toContain("Session Notes");
+        } finally {
+            logSpy.mockRestore();
+        }
     });
 
     it("applies default Notes live Responses patches through the existing markdown patcher", async () => {
@@ -763,7 +887,7 @@ describe("parse-gpt stabilisation", () => {
         expect(JSON.parse(request.input).current_visible_notes).toBe(LONG_NOTES);
     });
 
-    it("handles fenced summary JSON and common summary alias keys", async () => {
+    it("handles fenced summary JSON and rejects common summary alias keys", async () => {
         openAiMock.responsesCreate.mockResolvedValueOnce(
             responsesJson("```json\n{\"summaryMarkdown\":\"## Summary\\n\\n- Fenced summary.\"}\n```")
         );
@@ -772,13 +896,20 @@ describe("parse-gpt stabilisation", () => {
             summaryMarkdown: "## Summary\n\n- Fenced summary.",
         });
 
-        openAiMock.responsesCreate.mockResolvedValueOnce(
-            responsesJson(JSON.stringify({ notesMarkdown: "## Summary\n\n- Alias summary." }))
-        );
+        for (const aliasKey of ["notesMarkdown", "markdown", "outputMarkdown"]) {
+            openAiMock.responsesCreate.mockResolvedValueOnce(
+                responsesJson(JSON.stringify({ [aliasKey]: "## Summary\n\n- Alias summary." }))
+            );
 
-        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
-            summaryMarkdown: "## Summary\n\n- Alias summary.",
-        });
+            await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+                code: "transform-output-missing-key",
+                details: expect.objectContaining({
+                    stage: "missing-key",
+                    jsonKeys: [aliasKey],
+                    expectedKey: "summaryMarkdown",
+                }),
+            });
+        }
     });
 
     it("rejects malformed, missing, empty, and error-like summary output with specific codes", async () => {

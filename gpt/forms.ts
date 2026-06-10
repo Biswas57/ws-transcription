@@ -10,7 +10,13 @@ import {
 } from "./model-config.js";
 import { extractJsonObjectText, isRecord } from "./json-parsing.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
-import { formatSafeJsonKeys, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
+import {
+    formatSafeJsonKeys,
+    recordUsageEvent,
+    safeErrorInfo,
+    safeJsonKeys,
+    safeUsageMetadata,
+} from "../safe-log.js";
 
 export const EXTRACT_SYS_TXT = `\
 You are a structured data extraction agent working across Australian professional, operational, study, and general contexts.
@@ -188,8 +194,17 @@ export async function extractAttributesFromText(
     }
 
     const maxOutputTokens = Math.max(512, template.length * 60);
+    recordUsageEvent("forms_live_extract_start", {
+        flow: "forms-live-extraction",
+        provider: "chat",
+        model: GPT_MINI_MODEL,
+        transcriptChars: correctedText.length,
+        templateFields: template.length,
+        maxOutputTokens,
+    });
 
     try {
+        const startedAt = Date.now();
         const completion = await openai.chat.completions.create({
             model: GPT_MINI_MODEL,
             store: false,
@@ -216,8 +231,32 @@ export async function extractAttributesFromText(
         const raw = parsed.parsedAttributes ?? {};
         const cleaned = filterAndNormalizeOutput(raw, allowedSet, "extract");
         console.log(`[extract] Got ${Object.keys(cleaned).length}/${template.length} fields`);
+        const usage = safeUsageMetadata(completion.usage);
+        recordUsageEvent("forms_live_extract_complete", {
+            flow: "forms-live-extraction",
+            provider: "chat",
+            model: GPT_MINI_MODEL,
+            transcriptChars: correctedText.length,
+            templateFields: template.length,
+            attrsReturned: Object.keys(cleaned).length,
+            maxOutputTokens,
+            durationMs: Date.now() - startedAt,
+            inputTokens: usage.inputTokens,
+            cachedInputTokens: usage.cachedInputTokens,
+            outputTokens: usage.outputTokens,
+            reasoningTokens: usage.reasoningTokens,
+            totalTokens: usage.totalTokens,
+        });
         return cleaned;
     } catch (err) {
+        recordUsageEvent("forms_live_extract_failed", {
+            flow: "forms-live-extraction",
+            provider: "chat",
+            model: GPT_MINI_MODEL,
+            transcriptChars: correctedText.length,
+            templateFields: template.length,
+            maxOutputTokens,
+        });
         console.warn(`[extract] Failed, returning sparse empty result — error: ${safeErrorInfo(err)}`);
         return {};
     }
@@ -243,6 +282,16 @@ export async function parseFinalAttributes(
     }
 
     const maxOutputTokens = Math.max(1024, template.length * 80);
+    recordUsageEvent("forms_final_start", {
+        flow: "forms-final",
+        provider: "responses",
+        model: GPT_FINAL_MODEL,
+        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        transcriptChars: fullTranscript.length,
+        truncatedChars: truncated.length,
+        templateFields: template.length,
+        maxOutputTokens,
+    });
 
     try {
         const response = await runOpenAIResponsesJson({
@@ -265,6 +314,14 @@ export async function parseFinalAttributes(
         });
 
         if (response.status === "incomplete") {
+            recordUsageEvent("forms_final_failed", {
+                flow: "forms-final",
+                reason: "incomplete",
+                transcriptChars: fullTranscript.length,
+                outputChars: response.outputText.length,
+                durationMs: response.durationMs,
+                incompleteReason: response.incompleteReason ?? undefined,
+            });
             console.warn(
                 `[final] Incomplete response, returning candidates — ` +
                 `transcriptChars: ${fullTranscript.length}, ` +
@@ -276,11 +333,26 @@ export async function parseFinalAttributes(
         }
 
         const content = response.outputText;
-        if (!content) { console.warn("[final] Empty response, returning candidates"); return candidateAttributes; }
+        if (!content) {
+            recordUsageEvent("forms_final_failed", {
+                flow: "forms-final",
+                reason: "empty-output",
+                transcriptChars: fullTranscript.length,
+                outputChars: 0,
+            });
+            console.warn("[final] Empty response, returning candidates");
+            return candidateAttributes;
+        }
 
         const parsed = JSON.parse(extractJsonObjectText(content)) as { finalAttributes?: unknown };
         const parsedKeys = safeJsonKeys(parsed);
         if (parsedKeys.length !== 1 || parsedKeys[0] !== "finalAttributes") {
+            recordUsageEvent("forms_final_failed", {
+                flow: "forms-final",
+                reason: "schema-failed",
+                transcriptChars: fullTranscript.length,
+                outputChars: content.length,
+            });
             console.warn(
                 `[final] Unexpected response keys, returning candidates — ` +
                 `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
@@ -288,6 +360,12 @@ export async function parseFinalAttributes(
             return candidateAttributes;
         }
         if (!isRecord(parsed.finalAttributes)) {
+            recordUsageEvent("forms_final_failed", {
+                flow: "forms-final",
+                reason: "missing-key",
+                transcriptChars: fullTranscript.length,
+                outputChars: content.length,
+            });
             console.warn("[final] Missing finalAttributes key, returning candidates");
             return candidateAttributes;
         }
@@ -307,8 +385,31 @@ export async function parseFinalAttributes(
         }
 
         console.log(`[final] ${GPT_FINAL_MODEL} pass complete. Updated ${updatedCount} fields.`);
+        recordUsageEvent("forms_final_complete", {
+            flow: "forms-final",
+            provider: "responses",
+            model: GPT_FINAL_MODEL,
+            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            transcriptChars: fullTranscript.length,
+            truncatedChars: truncated.length,
+            templateFields: template.length,
+            updatedCount,
+            outputChars: content.length,
+            durationMs: response.durationMs,
+            inputTokens: response.usage.inputTokens,
+            cachedInputTokens: response.usage.cachedInputTokens,
+            outputTokens: response.usage.outputTokens,
+            reasoningTokens: response.usage.reasoningTokens,
+            totalTokens: response.usage.totalTokens,
+        });
         return merged;
     } catch (err) {
+        recordUsageEvent("forms_final_failed", {
+            flow: "forms-final",
+            reason: "exception",
+            transcriptChars: fullTranscript.length,
+            templateFields: template.length,
+        });
         console.error(`[final] Error — ${safeErrorInfo(err)}`);
         return candidateAttributes;
     }

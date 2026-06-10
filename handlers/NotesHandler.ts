@@ -22,7 +22,7 @@ import {
 } from "../transcription.js";
 import { reviseTranscription, generateNotesIncrementalPatch, finalizeNotes } from "../parse-gpt.js";
 import { applyNotesLivePatch } from "../notes-live-patch.js";
-import { safeErrorInfo } from "../safe-log.js";
+import { recordUsageEvent, safeErrorInfo } from "../safe-log.js";
 import { resolveNotesCapWindow, type NotesCapWindowLease } from "../notes-cap-registry.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
@@ -174,6 +174,16 @@ export class NotesHandler implements TranscriptionHandler {
             `capWindow: ${this.capWindow !== null}, ` +
             `capWindowReused: ${this.capWindow?.capWindowReused ?? false}`
         );
+        recordUsageEvent("recording_session_start", {
+            mode: "notes",
+            continuation: continuationRequested,
+            providedNotesChars,
+            currentNotesChars: this.st.currentMarkdown.length,
+            sectionsCount: this.st.sections.length,
+            sectionsChars: this.st.sections.reduce((sum, section) => sum + section.length, 0),
+            capWindow: this.capWindow !== null,
+            capWindowReused: this.capWindow?.capWindowReused ?? false,
+        });
 
         this.send({ type: "started", mode: "notes" });
     }
@@ -233,9 +243,21 @@ export class NotesHandler implements TranscriptionHandler {
         // Snapshot + reset so new chunks aren't blocked during async processing
         const captureBuffer = st.audioBuffer;
         const captureSize = captureBuffer.length;
+        const captureChunkCount = st.nchunks;
         st.audioBuffer = Buffer.alloc(0);
         st.nchunks = 0;
         const passNum = ++this.passCount;
+        recordUsageEvent("transcription_batch_accepted", {
+            mode: "notes",
+            reason: "batch",
+            passNum,
+            audioBufferBytes: captureSize,
+            chunkCount: captureChunkCount,
+            chunkThreshold,
+            queueSize: this.queue.size,
+            queuePending: this.queue.pending,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+        });
 
         this.queue.add(async () => {
             if (this.closed) return;
@@ -258,6 +280,16 @@ export class NotesHandler implements TranscriptionHandler {
                 if (this.closed) return;
                 if (batchResult.skipped) {
                     console.log(`[${this.sessionId}][notes] Pass ${passNum} — vad skip, no whisper (${Date.now() - passStart}ms)`);
+                    recordUsageEvent("transcription_batch_processed", {
+                        mode: "notes",
+                        reason: "batch",
+                        passNum,
+                        skipped: true,
+                        vadSkipped: true,
+                        audioBufferBytes: captureSize,
+                        chunkCount: captureChunkCount,
+                        durationMs: Date.now() - passStart,
+                    });
                     return;
                 }
                 const transcription = batchResult.transcript;
@@ -272,6 +304,17 @@ export class NotesHandler implements TranscriptionHandler {
                 const wordCount = countWords(revised);
                 if (wordCount < NOTES_MIN_WORD_COUNT) {
                     console.log(`[${this.sessionId}][notes] Pass ${passNum} — too short (${wordCount} words), skipping`);
+                    recordUsageEvent("transcription_batch_processed", {
+                        mode: "notes",
+                        reason: "batch",
+                        passNum,
+                        skipped: true,
+                        tooShort: true,
+                        transcriptChars: transcription.length,
+                        revisedChars: revised.length,
+                        wordCount,
+                        durationMs: Date.now() - passStart,
+                    });
                     return;
                 }
 
@@ -290,11 +333,29 @@ export class NotesHandler implements TranscriptionHandler {
                     `revise: ${Date.now() - t1}ms, e2e: ${e2eMs}ms, ` +
                     `pendingChars: ${this.pendingNotesTranscript.length}`
                 );
+                recordUsageEvent("transcription_batch_processed", {
+                    mode: "notes",
+                    reason: "batch",
+                    passNum,
+                    skipped: false,
+                    transcriptChars: transcription.length,
+                    revisedChars: revised.length,
+                    wordCount,
+                    pendingNotesTranscriptChars: this.pendingNotesTranscript.length,
+                    cumulativeTranscriptChars: st.transcript.length,
+                    durationMs: e2eMs,
+                });
 
                 // Trigger scheduler — fires notes update if phase conditions are met.
                 void this.maybeScheduleNotesUpdate();
 
             } catch (e) {
+                recordUsageEvent("transcription_batch_failed", {
+                    mode: "notes",
+                    reason: "batch",
+                    passNum,
+                    durationMs: Date.now() - passStart,
+                });
                 console.error(`[${this.sessionId}][notes] Pass ${passNum} failed after ${Date.now() - passStart}ms — ${safeErrorInfo(e)}`);
                 this.send({ type: "error", code: "transcription-failed" });
             }
@@ -324,6 +385,16 @@ export class NotesHandler implements TranscriptionHandler {
             `[${this.sessionId}][notes] Stop received — ` +
             `trigger: ${trigger}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
         );
+        recordUsageEvent("recording_stop_start", {
+            mode: "notes",
+            stopReason: trigger,
+            queueSize: this.queue.size,
+            queuePending: this.queue.pending,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+            currentNotesChars: st.currentMarkdown.length,
+            pendingNotesTranscriptChars: this.pendingNotesTranscript.length,
+            transcriptChars: st.transcript.length,
+        });
 
         await this.queue.onIdle();
         if (this.closed) return;
@@ -418,8 +489,19 @@ export class NotesHandler implements TranscriptionHandler {
                         `duration: ${Date.now() - flushStart}ms, ` +
                         `outputChars: ${updated.length}`
                     );
+                    recordUsageEvent("notes_live_stop_flush_complete", {
+                        mode: "notes",
+                        pendingChars: pendingBatch.length,
+                        outputChars: updated.length,
+                        durationMs: Date.now() - flushStart,
+                    });
                 }
             } catch (e) {
+                recordUsageEvent("notes_live_stop_flush_failed", {
+                    mode: "notes",
+                    pendingChars: pendingBatch.length,
+                    durationMs: Date.now() - flushStart,
+                });
                 console.error(
                     `[${this.sessionId}][notes] Stop flush failed after ` +
                     `${Date.now() - flushStart}ms — ${safeErrorInfo(e)}`
@@ -451,11 +533,29 @@ export class NotesHandler implements TranscriptionHandler {
                 `finalizeNotes: ${finalMs}ms, stop-to-done: ${stopMs}ms, ` +
                 `session: ${Math.round(sessionMs / 1000)}s, output: ${finalMarkdown.length} chars`
             );
+            recordUsageEvent("recording_finalisation_complete", {
+                mode: "notes",
+                stopReason: trigger,
+                finalMs,
+                stopToDoneMs: stopMs,
+                elapsedSessionMs: sessionMs,
+                transcriptChars: st.transcript.length,
+                currentNotesChars: st.currentMarkdown.length,
+                outputChars: finalMarkdown.length,
+                passCount: this.passCount,
+            });
 
             st.currentMarkdown = finalMarkdown;
             this.send({ type: "notes_final", notesMarkdown: finalMarkdown });
             this.closeCapWindow();
         } catch (err) {
+            recordUsageEvent("recording_finalisation_failed", {
+                mode: "notes",
+                stopReason: trigger,
+                elapsedSessionMs: Date.now() - this.sessionStartedAt,
+                transcriptChars: st.transcript.length,
+                currentNotesChars: st.currentMarkdown.length,
+            });
             console.error(`[${this.sessionId}][notes] Final pass error — ${safeErrorInfo(err)}`);
             this.send({ type: "notes_final", notesMarkdown: st.currentMarkdown });
             this.closeCapWindow();
@@ -481,6 +581,13 @@ export class NotesHandler implements TranscriptionHandler {
             this.markCapWindowReconnectable();
         }
         console.log(`[${this.sessionId}][notes] Handler closed`);
+        recordUsageEvent("recording_session_closed", {
+            mode: "notes",
+            stopping: closeCapWindow,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+            queueSize: this.queue.size,
+            queuePending: this.queue.pending,
+        });
     }
 
     private startSessionCapTimer(): void {
@@ -494,6 +601,13 @@ export class NotesHandler implements TranscriptionHandler {
                 `maxMs: ${MAX_NOTES_SESSION_MS}, ` +
                 `capElapsedMs: ${Date.now() - capStartedAtMs}`
             );
+            recordUsageEvent("session_cap_reached", {
+                mode: "notes",
+                immediate: true,
+                maxMs: MAX_NOTES_SESSION_MS,
+                capElapsedMs: Date.now() - capStartedAtMs,
+                logicalCap: this.capWindow !== null,
+            });
             const timer = setTimeout(() => {
                 void this.beginStop("session-cap");
             }, 0);
@@ -505,6 +619,13 @@ export class NotesHandler implements TranscriptionHandler {
                 `[${this.sessionId}][notes] Session cap reached — ` +
                 `maxMs: ${MAX_NOTES_SESSION_MS}, capElapsedMs: ${Date.now() - capStartedAtMs}`
             );
+            recordUsageEvent("session_cap_reached", {
+                mode: "notes",
+                immediate: false,
+                maxMs: MAX_NOTES_SESSION_MS,
+                capElapsedMs: Date.now() - capStartedAtMs,
+                logicalCap: this.capWindow !== null,
+            });
             void this.beginStop("session-cap");
         }, remainingMs);
         // Do not keep the process alive solely for a long safety timer.
@@ -514,6 +635,12 @@ export class NotesHandler implements TranscriptionHandler {
             `maxMs: ${MAX_NOTES_SESSION_MS}, remainingMs: ${remainingMs}, ` +
             `logicalCap: ${this.capWindow !== null}`
         );
+        recordUsageEvent("session_cap_armed", {
+            mode: "notes",
+            maxMs: MAX_NOTES_SESSION_MS,
+            remainingMs,
+            logicalCap: this.capWindow !== null,
+        });
     }
 
     private clearSessionCapTimer(): void {
@@ -576,6 +703,14 @@ export class NotesHandler implements TranscriptionHandler {
             `phase: ${phase.name}, pendingChars: ${batch.length}, ` +
             `currentMarkdownChars: ${this.st.currentMarkdown.length}`
         );
+        recordUsageEvent("notes_live_patch_scheduled", {
+            mode: "notes",
+            phase: phase.name,
+            pendingChars: batch.length,
+            currentNotesChars: this.st.currentMarkdown.length,
+            elapsedSessionMs: elapsed,
+            timeSinceLastMs: timeSinceLast,
+        });
 
         this.notesUpdatePromise = (async () => {
             try {
@@ -602,8 +737,21 @@ export class NotesHandler implements TranscriptionHandler {
                     `phase: ${phase.name}, duration: ${Date.now() - updateStart}ms, ` +
                     `outputChars: ${updated.length}`
                 );
+                recordUsageEvent("notes_live_patch_applied", {
+                    mode: "notes",
+                    phase: phase.name,
+                    pendingChars: batch.length,
+                    outputChars: updated.length,
+                    durationMs: Date.now() - updateStart,
+                });
                 this.send({ type: "notes_update", notesMarkdown: updated });
             } catch (e) {
+                recordUsageEvent("notes_live_patch_failed", {
+                    mode: "notes",
+                    phase: phase.name,
+                    pendingChars: batch.length,
+                    durationMs: Date.now() - updateStart,
+                });
                 console.error(
                     `[${this.sessionId}][notes] Scheduled update failed after ` +
                     `${Date.now() - updateStart}ms — ${safeErrorInfo(e)}`
@@ -654,6 +802,19 @@ export class NotesHandler implements TranscriptionHandler {
             `incomingChunkBytes: ${incomingChunkBytes}, ` +
             `overloadSignaled: ${this.overloadSignaled}`
         );
+        recordUsageEvent("recording_queue_overloaded", {
+            mode: "notes",
+            queueSize: this.queue.size,
+            queuePending: this.queue.pending,
+            queueLoad,
+            maxJobs: MAX_NOTES_TRANSCRIPTION_QUEUE_JOBS,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+            currentNotesChars: this.st.currentMarkdown.length,
+            pendingNotesTranscriptChars: this.pendingNotesTranscript.length,
+            audioBufferBytes: this.st.audioBuffer.length,
+            incomingChunkBytes,
+            overloadSignaled: this.overloadSignaled,
+        });
     }
 
     private markCapWindowReconnectable(): void {

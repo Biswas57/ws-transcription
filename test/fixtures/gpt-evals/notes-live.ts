@@ -1,5 +1,36 @@
 import type { NotesLiveEvalFixture } from "./types.js";
 
+const LONG_CURRENT_CONTEXT_LABELS = [
+    "routing",
+    "approval",
+    "support",
+    "quality",
+    "handover",
+    "training",
+    "reporting",
+    "escalation",
+    "readiness",
+    "coverage",
+    "workflow",
+    "verification",
+    "review",
+    "operations",
+    "recap",
+    "follow up",
+    "risk",
+    "coordination",
+];
+
+function syntheticLongCurrentNotesContext(topic: string): string {
+    return LONG_CURRENT_CONTEXT_LABELS.map((label) => [
+        `## Prior ${topic} ${label}`,
+        "",
+        `- Synthetic prior note about ${topic} ${label} context for long-current-notes eval coverage.`,
+        "- Includes generic process context, decisions, actions, dependencies, risks, and verification items.",
+        "- Repeats deliberately neutral detail so the fixture crosses the live context compaction threshold.",
+    ].join("\n")).join("\n\n");
+}
+
 export const notesLiveFixtures: NotesLiveEvalFixture[] = [
     {
         kind: "notes-live",
@@ -85,6 +116,8 @@ export const notesLiveFixtures: NotesLiveEvalFixture[] = [
             "## Open Questions / Verify",
             "",
             "- Confirm the QA sign-off time.",
+            "",
+            syntheticLongCurrentNotesContext("incident response"),
         ].join("\n"),
         pendingTranscript: [
             "Marco confirmed the support handover pack must include retry failure screenshots.",

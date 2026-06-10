@@ -6,8 +6,9 @@ import {
     countTokens,
     getNotesLiveProviderMode,
 } from "./model-config.js";
+import { buildNotesLiveCurrentContext } from "./notes-live-context.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
-import { safeErrorInfo } from "../safe-log.js";
+import { recordUsageEvent, safeErrorInfo, safeUsageMetadata } from "../safe-log.js";
 
 type NotesLiveFallbackCategory =
     | "provider_error"
@@ -183,6 +184,10 @@ type NotesLivePatchRequest = {
     maxOutputTokens: number;
     transcriptChars: number;
     currentNotesChars: number;
+    currentNotesContextChars: number;
+    contextCompacted: boolean;
+    contextSavedChars: number;
+    headingCount: number;
 };
 
 type NotesLivePatchFailure = {
@@ -192,27 +197,32 @@ type NotesLivePatchFailure = {
     incompleteReason?: string | null;
 };
 
-function buildNotesLivePatchRequest(
+export function buildNotesLivePatchRequest(
     transcriptSegment: string,
     currentNotes: string,
     noteStyle: string,
     sections: string[]
 ): NotesLivePatchRequest {
     const transcriptTokens = countTokens(transcriptSegment);
+    const currentContext = buildNotesLiveCurrentContext(currentNotes);
     return {
         input: JSON.stringify({
             note_style: noteStyle,
             sections: sections.length > 0 ? sections : undefined,
-            current_notes: currentNotes || "",
+            current_notes: currentContext.contextMarkdown,
             transcript_segment: transcriptSegment,
         }),
-        inputTokens: transcriptTokens + countTokens(currentNotes),
+        inputTokens: transcriptTokens + countTokens(currentContext.contextMarkdown),
         maxOutputTokens: Math.min(
             2048,
             Math.max(1024, Math.ceil(transcriptTokens * 1.2) + 512)
         ),
         transcriptChars: transcriptSegment.length,
-        currentNotesChars: currentNotes.length,
+        currentNotesChars: currentContext.originalChars,
+        currentNotesContextChars: currentContext.contextChars,
+        contextCompacted: currentContext.compacted,
+        contextSavedChars: currentContext.savedChars,
+        headingCount: currentContext.headingCount,
     };
 }
 
@@ -220,7 +230,8 @@ function logNotesLivePatchReceived(
     patch: NotesLivePatch,
     request: NotesLivePatchRequest,
     provider: "chat" | "responses",
-    fallbackUsed: boolean
+    fallbackUsed: boolean,
+    extra: { outputChars?: number; durationMs?: number; totalTokens?: number; reasoningTokens?: number } = {}
 ): void {
     console.log(
         `[notes-incremental-patch] Patch received — ` +
@@ -230,9 +241,30 @@ function logNotesLivePatchReceived(
         `fallbackChars: ${patch.fallbackAppendMarkdown?.length ?? 0}, ` +
         `transcriptChars: ${request.transcriptChars}, ` +
         `currentNotesChars: ${request.currentNotesChars}, ` +
+        `currentNotesContextChars: ${request.currentNotesContextChars}, ` +
         `inputTokens: ${request.inputTokens}, ` +
         `maxOutputTokens: ${request.maxOutputTokens}`
     );
+    recordUsageEvent("notes_live_patch_complete", {
+        flow: "notes-live-patch",
+        provider,
+        fallbackUsed,
+        updates: patch.updates.length,
+        fallbackChars: patch.fallbackAppendMarkdown?.length ?? 0,
+        transcriptChars: request.transcriptChars,
+        currentNotesChars: request.currentNotesChars,
+        currentNotesContextChars: request.currentNotesContextChars,
+        contextCompacted: request.contextCompacted,
+        contextSavedChars: request.contextSavedChars,
+        headingCount: request.headingCount,
+        estimatedInputTokens: request.inputTokens,
+        maxOutputTokens: request.maxOutputTokens,
+        outputChars: extra.outputChars,
+        durationMs: extra.durationMs,
+        totalTokens: extra.totalTokens,
+        reasoningTokens: extra.reasoningTokens,
+        parseFailed: patch.parseFailed === true,
+    });
 }
 
 function logNotesLiveProviderSelected(
@@ -244,9 +276,33 @@ function logNotesLiveProviderSelected(
         `provider: ${provider}, ` +
         `transcriptChars: ${request.transcriptChars}, ` +
         `currentNotesChars: ${request.currentNotesChars}, ` +
+        `currentNotesContextChars: ${request.currentNotesContextChars}, ` +
         `inputTokens: ${request.inputTokens}, ` +
         `maxOutputTokens: ${request.maxOutputTokens}`
     );
+    recordUsageEvent("notes_live_patch_start", {
+        flow: "notes-live-patch",
+        provider,
+        transcriptChars: request.transcriptChars,
+        currentNotesChars: request.currentNotesChars,
+        currentNotesContextChars: request.currentNotesContextChars,
+        contextCompacted: request.contextCompacted,
+        contextSavedChars: request.contextSavedChars,
+        headingCount: request.headingCount,
+        estimatedInputTokens: request.inputTokens,
+        maxOutputTokens: request.maxOutputTokens,
+    });
+    if (request.contextCompacted) {
+        recordUsageEvent("notes-live-context-compacted", {
+            flow: "notes-live-patch",
+            provider,
+            originalChars: request.currentNotesChars,
+            contextChars: request.currentNotesContextChars,
+            savedChars: request.contextSavedChars,
+            headingCount: request.headingCount,
+            compacted: true,
+        });
+    }
 }
 
 function logNotesLiveFallback(
@@ -267,12 +323,25 @@ function logNotesLiveFallback(
     if (errorInfo) parts.push(`error: ${errorInfo}`);
 
     console.warn(parts.join(" — "));
+    recordUsageEvent("notes_live_patch_fallback", {
+        flow: "notes-live-patch",
+        category: failure.category,
+        transcriptChars: request.transcriptChars,
+        currentNotesChars: request.currentNotesChars,
+        currentNotesContextChars: request.currentNotesContextChars,
+        contextCompacted: request.contextCompacted,
+        contextSavedChars: request.contextSavedChars,
+        headingCount: request.headingCount,
+        outputChars: failure.outputChars,
+        durationMs: failure.durationMs,
+        incompleteReason: failure.incompleteReason ?? undefined,
+    });
 }
 
 /**
  * Generate append-only live note patch instructions.
- * The model still receives full current notes for section choice and duplicate
- * avoidance, but its output budget is bounded for small patch JSON.
+ * The model receives bounded current-notes context for section choice and
+ * duplicate avoidance; the backend still applies patches to full canonical notes.
  */
 export async function generateNotesIncrementalPatch(
     transcriptSegment: string,
@@ -310,6 +379,7 @@ async function generateNotesIncrementalPatchChat(
     request: NotesLivePatchRequest,
     fallbackUsed: boolean
 ): Promise<NotesLivePatch> {
+    const startedAt = Date.now();
     const completion = await openai.chat.completions.create({
         model: GPT_MINI_MODEL,
         store: false,
@@ -325,11 +395,33 @@ async function generateNotesIncrementalPatchChat(
     const content = completion.choices?.[0]?.message?.content;
     if (!content) {
         console.warn("[notes-incremental-patch] Empty response, returning empty patch");
+        recordUsageEvent("notes_live_patch_complete", {
+            flow: "notes-live-patch",
+            provider: "chat",
+            fallbackUsed,
+            parseFailed: false,
+            transcriptChars: request.transcriptChars,
+            currentNotesChars: request.currentNotesChars,
+            currentNotesContextChars: request.currentNotesContextChars,
+            contextCompacted: request.contextCompacted,
+            contextSavedChars: request.contextSavedChars,
+            headingCount: request.headingCount,
+            estimatedInputTokens: request.inputTokens,
+            maxOutputTokens: request.maxOutputTokens,
+            outputChars: 0,
+            durationMs: Date.now() - startedAt,
+        });
         return { updates: [] };
     }
 
     const patch = parseNotesLivePatchContent(content);
-    logNotesLivePatchReceived(patch, request, "chat", fallbackUsed);
+    const usage = safeUsageMetadata(completion.usage);
+    logNotesLivePatchReceived(patch, request, "chat", fallbackUsed, {
+        outputChars: content.length,
+        durationMs: Date.now() - startedAt,
+        totalTokens: usage.totalTokens,
+        reasoningTokens: usage.reasoningTokens,
+    });
     return patch;
 }
 
@@ -348,6 +440,10 @@ async function generateNotesIncrementalPatchResponses(
             providerMode: "responses",
             transcriptChars: request.transcriptChars,
             currentNotesChars: request.currentNotesChars,
+            currentNotesContextChars: request.currentNotesContextChars,
+            contextCompacted: request.contextCompacted,
+            contextSavedChars: request.contextSavedChars,
+            headingCount: request.headingCount,
             estimatedInputTokens: request.inputTokens,
         },
     });
@@ -398,7 +494,12 @@ async function generateNotesIncrementalPatchResponses(
         };
     }
 
-    logNotesLivePatchReceived(patch, request, "responses", false);
+    logNotesLivePatchReceived(patch, request, "responses", false, {
+        outputChars: response.outputText.length,
+        durationMs: response.durationMs,
+        totalTokens: response.usage.totalTokens,
+        reasoningTokens: response.usage.reasoningTokens,
+    });
     return { patch };
 }
 

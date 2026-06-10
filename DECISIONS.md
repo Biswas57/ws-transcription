@@ -112,6 +112,10 @@ audio batch
 - Canonical v1 endpoints are `POST /notes/transform/summarise` and `POST /notes/transform/reorganise`.
 - Internal auth uses `Authorization: Bearer <NOTES_TRANSFORM_SECRET>`.
 - HTTP routes share the existing service port with the WebSocket server and must preserve current WebSocket behaviour.
+- Async Summarise/Reorganise jobs are app-owned and in-process for v1. They do not use OpenAI background mode, provider Conversations/state, webhooks, Redis, Postgres, or external queues.
+- Async transform job IDs are opaque, results expire, and logs must remain safe metadata only.
+- Existing synchronous transform routes remain available. Async transform results are preview-style results and do not mutate canonical notes.
+- Final Notes async job wiring is deferred because current finalisation depends on live WebSocket/session-owned transcript and current-notes state.
 
 ### Notes Transform Source Of Truth
 
@@ -142,6 +146,10 @@ audio batch
 - Usage limits and observability are fair-use safeguards, not monetisation.
 - Do not reintroduce Stripe, Pro tiers, subscription checks, or paid feature gates in this repo.
 - Any future diagnostics must avoid raw transcript, notes, or PII content and prefer counts, timings, limits, and status flags.
+- Usage events are content-safe metadata checkpoints for reliability and cost-safety: session starts/stops, queue overloads, cap triggers, transcription batch counts, provider calls, fallback categories, token usage, and output/input lengths.
+- Long-session token/cost metrics are estimates used to guide backend reliability work such as T-094. They are not billing truth and should not be used to introduce monetisation gates.
+- Live Notes patch prompts may receive bounded current-notes context once canonical notes grow large. This is a model-input optimisation only: full canonical notes remain app-owned, are preserved in `NotesHandler`, are used for patch application, and are still supplied to final Notes.
+- Safe production metadata for live context compaction may include original/context/saved char counts, heading counts, provider mode, and booleans. It must not include raw notes, headings, transcript, prompts, or model output.
 
 ### Logging And Privacy
 
@@ -158,6 +166,15 @@ audio batch
 - This is privacy-first backend hygiene only, not a medical, HIPAA, legal, or regulated-professional compliance claim.
 - Clinical or professional compliance requires separate legal, compliance, security, access-control, audit-log, retention, and incident-response work.
 - Any future use of provider Conversations, background mode, tools, file search, retained context, or stateful Responses features needs explicit product/privacy review before implementation.
+
+### Prompt Caching Readiness
+
+- Prompt caching is secondary to reducing context bloat; T-094 bounded live Notes context is the primary live cost-control step.
+- Stable prompt prefixes are most useful for final/transform flows where static instructions and strict JSON schemas repeat across calls.
+- Keep dynamic content such as transcript, current notes, form values, and requested sections after stable instructions/schema where practical.
+- Safe cached-token metadata may be logged as numeric counts only: cached input tokens, total input tokens, output tokens, reasoning tokens, and total tokens.
+- Do not log raw prompts, notes, transcripts, generated markdown, form values, field labels, section names, or provider outputs while evaluating cache behaviour.
+- Do not add `prompt_cache_key` by default until there is an explicit product/privacy decision. Future cache keys must not include raw transcript, notes, field values, user identifiers, or session identifiers.
 
 ### GPT Runtime Overrides
 

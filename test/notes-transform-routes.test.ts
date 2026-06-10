@@ -10,6 +10,7 @@ vi.mock("../parse-gpt.js", () => ({
 }));
 
 import { createNotesTransformRequestHandler } from "../notes-transform-routes.js";
+import { AsyncJobStore } from "../async-jobs.js";
 
 const TEST_SECRET = "notes-transform-test-secret";
 const LONG_NOTES = [
@@ -24,17 +25,21 @@ const LONG_NOTES = [
 
 type RouteResult = { status: number; body: unknown };
 type RequestFn = (path: string, body: unknown, authHeader?: string | null) => Promise<RouteResult>;
+type GetFn = (path: string, authHeader?: string | null) => Promise<RouteResult>;
 
 async function withTransformHandler(
     deps: Parameters<typeof createNotesTransformRequestHandler>[0],
-    fn: (request: RequestFn) => Promise<void>
+    fn: (request: RequestFn, get: GetFn) => Promise<void>
 ): Promise<void> {
     const handler = createNotesTransformRequestHandler({
         getSecret: () => TEST_SECRET,
         now: () => 1_000,
         ...deps,
     });
-    await fn((path, body, authHeader) => postJson(handler, path, body, authHeader));
+    await fn(
+        (path, body, authHeader) => postJson(handler, path, body, authHeader),
+        (path, authHeader) => getJson(handler, path, authHeader)
+    );
 }
 
 async function postJson(
@@ -76,6 +81,46 @@ async function postJson(
         status,
         body: JSON.parse(rawBody),
     };
+}
+
+async function getJson(
+    handler: ReturnType<typeof createNotesTransformRequestHandler>,
+    path: string,
+    authHeader: string | null = `Bearer ${TEST_SECRET}`
+): Promise<RouteResult> {
+    const headers: Record<string, string> = {};
+    if (authHeader !== null) headers.authorization = authHeader;
+
+    const req = Readable.from([]) as IncomingMessage;
+    req.method = "GET";
+    req.url = path;
+    req.headers = headers;
+
+    let status = 0;
+    let rawBody = "";
+    const resDouble = {
+        headersSent: false,
+        writeHead(code: number) {
+            status = code;
+            resDouble.headersSent = true;
+            return resDouble;
+        },
+        end(chunk?: unknown) {
+            rawBody += chunk ? String(chunk) : "";
+            return resDouble;
+        },
+    };
+    const res = resDouble as unknown as ServerResponse;
+
+    await handler(req, res);
+    return {
+        status,
+        body: JSON.parse(rawBody),
+    };
+}
+
+async function flushPromises(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve));
 }
 
 function codedError(code: string): Error {
@@ -286,5 +331,231 @@ describe("notes transform HTTP routes", () => {
                 },
             });
         });
+    });
+
+    it("creates and polls an async Summarise job", async () => {
+        const jobStore = new AsyncJobStore({
+            now: () => 1_000,
+            createJobId: () => "job-summary-1",
+        });
+        const generateSummary = vi.fn(async () => ({ summaryMarkdown: "## Summary\n\n- Condensed." }));
+
+        await withTransformHandler({ generateSummary, jobStore }, async (request, get) => {
+            const created = await request(
+                "/notes/transform-jobs",
+                { operation: "summarise", notesMarkdown: LONG_NOTES, noteStyle: "meeting" }
+            );
+
+            expect(created.status).toBe(202);
+            expect(created.body).toEqual({ jobId: "job-summary-1", status: "queued" });
+
+            await flushPromises();
+            const polled = await get("/notes/transform-jobs/job-summary-1");
+
+            expect(polled.status).toBe(200);
+            expect(polled.body).toMatchObject({
+                jobId: "job-summary-1",
+                type: "notes-transform-summarise",
+                status: "succeeded",
+                result: { summaryMarkdown: "## Summary\n\n- Condensed." },
+            });
+            expect(generateSummary).toHaveBeenCalledWith({
+                notesMarkdown: LONG_NOTES,
+                noteStyle: "meeting",
+            });
+        });
+    });
+
+    it("creates and polls an async Reorganise job", async () => {
+        const jobStore = new AsyncJobStore({
+            now: () => 1_000,
+            createJobId: () => "job-reorganise-1",
+        });
+        const generateReorganisation = vi.fn(async () => ({
+            reorganisedMarkdown: "## Reorganised\n\n- Preserved detail.",
+        }));
+
+        await withTransformHandler({ generateReorganisation, jobStore }, async (request, get) => {
+            const created = await request(
+                "/notes/transform-jobs",
+                {
+                    operation: "reorganise",
+                    notesMarkdown: LONG_NOTES,
+                    targetSections: ["Actions", "Risks"],
+                }
+            );
+
+            expect(created.status).toBe(202);
+            expect(created.body).toEqual({ jobId: "job-reorganise-1", status: "queued" });
+
+            await flushPromises();
+            const polled = await get("/notes/transform-jobs/job-reorganise-1");
+
+            expect(polled.status).toBe(200);
+            expect(polled.body).toMatchObject({
+                jobId: "job-reorganise-1",
+                type: "notes-transform-reorganise",
+                status: "succeeded",
+                result: { reorganisedMarkdown: "## Reorganised\n\n- Preserved detail." },
+            });
+            expect(generateReorganisation).toHaveBeenCalledWith({
+                notesMarkdown: LONG_NOTES,
+                noteStyle: undefined,
+                targetSections: ["Actions", "Risks"],
+            });
+        });
+    });
+
+    it("exposes running async job state before completion", async () => {
+        const jobStore = new AsyncJobStore({
+            now: () => 1_000,
+            createJobId: () => "job-running-1",
+        });
+        let resolveSummary: ((value: { summaryMarkdown: string }) => void) | undefined;
+        const generateSummary = vi.fn(() => new Promise<{ summaryMarkdown: string }>((resolve) => {
+            resolveSummary = resolve;
+        }));
+
+        await withTransformHandler({ generateSummary, jobStore }, async (request, get) => {
+            await request(
+                "/notes/transform-jobs",
+                { operation: "summarise", notesMarkdown: LONG_NOTES }
+            );
+            await flushPromises();
+
+            const running = await get("/notes/transform-jobs/job-running-1");
+            expect(running.status).toBe(200);
+            expect(running.body).toMatchObject({
+                jobId: "job-running-1",
+                status: "running",
+            });
+            expect(running.body).not.toHaveProperty("result");
+
+            resolveSummary?.({ summaryMarkdown: "## Summary\n\n- Done." });
+            await flushPromises();
+
+            const succeeded = await get("/notes/transform-jobs/job-running-1");
+            expect(succeeded.body).toMatchObject({
+                status: "succeeded",
+                result: { summaryMarkdown: "## Summary\n\n- Done." },
+            });
+        });
+    });
+
+    it("stores async transform failures safely", async () => {
+        const jobStore = new AsyncJobStore({
+            now: () => 1_000,
+            createJobId: () => "job-failed-1",
+        });
+        const generateSummary = vi.fn(async () => {
+            throw codedError("transform-output-incomplete");
+        });
+
+        await withTransformHandler({ generateSummary, jobStore }, async (request, get) => {
+            const created = await request(
+                "/notes/transform-jobs",
+                { operation: "summarise", notesMarkdown: LONG_NOTES }
+            );
+            expect(created.status).toBe(202);
+
+            await flushPromises();
+            const failed = await get("/notes/transform-jobs/job-failed-1");
+
+            expect(failed.status).toBe(200);
+            expect(failed.body).toMatchObject({
+                jobId: "job-failed-1",
+                status: "failed",
+                error: {
+                    code: "transform-output-incomplete",
+                    message: "Notes transform output was incomplete.",
+                },
+            });
+            expect(failed.body).not.toHaveProperty("result");
+        });
+    });
+
+    it("returns safe not-found for unknown async jobs", async () => {
+        const jobStore = new AsyncJobStore();
+
+        await withTransformHandler({ jobStore }, async (_request, get) => {
+            const result = await get("/notes/transform-jobs/missing-job");
+
+            expect(result.status).toBe(404);
+            expect(result.body).toEqual({
+                error: {
+                    code: "job-not-found",
+                    message: "Job not found or expired.",
+                },
+            });
+        });
+    });
+
+    it("fails closed for async job auth and missing secret", async () => {
+        const generateSummary = vi.fn(async () => ({ summaryMarkdown: "## Summary" }));
+
+        await withTransformHandler({ generateSummary }, async (request, get) => {
+            const createUnauthorised = await request(
+                "/notes/transform-jobs",
+                { operation: "summarise", notesMarkdown: LONG_NOTES },
+                "Bearer wrong-secret"
+            );
+            expect(createUnauthorised.status).toBe(401);
+
+            const pollUnauthorised = await get("/notes/transform-jobs/job-1", null);
+            expect(pollUnauthorised.status).toBe(401);
+        });
+
+        await withTransformHandler({
+            generateSummary,
+            getSecret: () => undefined,
+        }, async (request, get) => {
+            const createUnavailable = await request(
+                "/notes/transform-jobs",
+                { operation: "summarise", notesMarkdown: LONG_NOTES }
+            );
+            expect(createUnavailable.status).toBe(503);
+
+            const pollUnavailable = await get("/notes/transform-jobs/job-1");
+            expect(pollUnavailable.status).toBe(503);
+        });
+    });
+
+    it("does not log raw async job notes or generated markdown", async () => {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const jobStore = new AsyncJobStore({
+            now: () => 1_000,
+            createJobId: () => "job-log-route",
+        });
+        const generateSummary = vi.fn(async () => ({
+            summaryMarkdown: "## Generated summary should not be logged",
+        }));
+
+        try {
+            await withTransformHandler({ generateSummary, jobStore }, async (request, get) => {
+                await request(
+                    "/notes/transform-jobs",
+                    {
+                        operation: "summarise",
+                        notesMarkdown: `${LONG_NOTES}\n\n- Private route note should not appear.`,
+                    }
+                );
+                await flushPromises();
+                await get("/notes/transform-jobs/job-log-route");
+            });
+
+            const lines = [
+                ...logSpy.mock.calls.map((call) => String(call[0])),
+                ...warnSpy.mock.calls.map((call) => String(call[0])),
+            ].join("\n");
+
+            expect(lines).toContain("job-created");
+            expect(lines).toContain("async_job_completed");
+            expect(lines).not.toContain("Private route note");
+            expect(lines).not.toContain("Generated summary");
+        } finally {
+            logSpy.mockRestore();
+            warnSpy.mockRestore();
+        }
     });
 });

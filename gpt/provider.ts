@@ -3,6 +3,7 @@ import { GPT_REQUEST_TIMEOUT_MS } from "./model-config.js";
 import {
     type SafeUsageMetadata,
     appendSafeNumber,
+    recordUsageEvent,
     safeIdentifierValue,
     safeLogValue,
     safeUsageMetadata,
@@ -56,7 +57,21 @@ export async function runOpenAIResponsesJson(args: {
             },
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
     } catch (err) {
-        logResponsesProviderError(args, err, Date.now() - startedAt);
+        const durationMs = Date.now() - startedAt;
+        const metadata = safeProviderErrorMetadata(err);
+        recordUsageEvent("provider_call_failed", {
+            api: "responses",
+            flow: args.label,
+            model: args.model,
+            reasoningEffort: args.reasoningEffort,
+            maxOutputTokens: args.maxOutputTokens,
+            durationMs,
+            status: metadata.status,
+            providerCode: metadata.code,
+            providerType: metadata.type,
+            providerParam: metadata.param,
+        });
+        logResponsesProviderError(args, err, durationMs);
         throw err;
     }
 
@@ -94,6 +109,22 @@ export async function runOpenAIResponsesJson(args: {
     }
 
     console.log(`[${args.label}] Provider — ${parts.join(", ")}`);
+    recordUsageEvent("provider_call_complete", {
+        api: "responses",
+        flow: args.label,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        status,
+        incompleteReason: incompleteReason ?? undefined,
+        outputChars: outputText.length,
+        maxOutputTokens: args.maxOutputTokens,
+        durationMs,
+        inputTokens: usage.inputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        outputTokens: usage.outputTokens,
+        reasoningTokens: usage.reasoningTokens,
+        totalTokens: usage.totalTokens,
+    });
 
     return {
         outputText,

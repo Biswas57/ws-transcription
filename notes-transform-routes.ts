@@ -8,8 +8,19 @@ import {
     type GenerateNotesSummaryArgs,
 } from "./parse-gpt.js";
 import { safeErrorInfo } from "./safe-log.js";
+import {
+    defaultAsyncJobStore,
+    type AsyncJobError,
+    type AsyncJobRecord,
+    type AsyncJobStore,
+    type AsyncJobType,
+} from "./async-jobs.js";
 
 type TransformType = "summarise" | "reorganise";
+type TransformJobOperation = TransformType;
+type TransformJobResult =
+    | { summaryMarkdown: string }
+    | { reorganisedMarkdown: string };
 
 type TransformErrorResponse = {
     error: {
@@ -23,6 +34,7 @@ type TransformRouteDeps = {
     generateReorganisation?: (args: GenerateNotesReorganisationArgs) => Promise<{ reorganisedMarkdown: string }>;
     getSecret?: () => string | undefined;
     now?: () => number;
+    jobStore?: AsyncJobStore;
 };
 
 type ValidatedSharedRequest = {
@@ -52,6 +64,8 @@ const MIN_NOTES_WORDS = 80;
 const MAX_TARGET_SECTIONS = 12;
 const SUMMARISE_PATH = "/notes/transform/summarise";
 const REORGANISE_PATH = "/notes/transform/reorganise";
+const TRANSFORM_JOBS_PATH = "/notes/transform-jobs";
+const TRANSFORM_JOB_PATH_PREFIX = `${TRANSFORM_JOBS_PATH}/`;
 
 const SAFE_ERROR_MESSAGES: Record<string, string> = {
     "empty-notes": "Notes markdown is required.",
@@ -69,6 +83,8 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
     "transform-output-unexpected-key": "Notes transform output was invalid.",
     "transform-provider-error": "Notes transform failed.",
     "transform-service-unavailable": "Notes transform service is unavailable.",
+    "job-not-found": "Job not found or expired.",
+    "job-store-full": "Transform job service is temporarily unavailable.",
     unauthorised: "Unauthorised.",
 };
 
@@ -77,6 +93,7 @@ export function createNotesTransformRequestHandler(deps: TransformRouteDeps = {}
     const generateReorganisation = deps.generateReorganisation ?? generateNotesReorganisation;
     const getSecret = deps.getSecret ?? (() => process.env.NOTES_TRANSFORM_SECRET);
     const now = deps.now ?? (() => Date.now());
+    const jobStore = deps.jobStore ?? defaultAsyncJobStore;
 
     return async function handleNotesTransformRequest(
         req: IncomingMessage,
@@ -85,6 +102,25 @@ export function createNotesTransformRequestHandler(deps: TransformRouteDeps = {}
         const startedAt = now();
         const url = new URL(req.url ?? "/", "http://localhost");
         const transformType = routeToTransformType(url.pathname);
+
+        if (url.pathname === TRANSFORM_JOBS_PATH && req.method === "POST") {
+            await handleCreateTransformJob(
+                req,
+                res,
+                jobStore,
+                generateSummary,
+                generateReorganisation,
+                getSecret,
+                startedAt,
+                now
+            );
+            return;
+        }
+
+        if (url.pathname.startsWith(TRANSFORM_JOB_PATH_PREFIX) && req.method === "GET") {
+            handleGetTransformJob(req, res, url.pathname, jobStore, getSecret);
+            return;
+        }
 
         if (!transformType || req.method !== "POST") {
             sendJson(res, 404, { error: { code: "not-found", message: "Route not found." } });
@@ -168,6 +204,210 @@ function routeToTransformType(pathname: string): TransformType | null {
     if (pathname === SUMMARISE_PATH) return "summarise";
     if (pathname === REORGANISE_PATH) return "reorganise";
     return null;
+}
+
+async function handleCreateTransformJob(
+    req: IncomingMessage,
+    res: ServerResponse,
+    jobStore: AsyncJobStore,
+    generateSummary: (args: GenerateNotesSummaryArgs) => Promise<{ summaryMarkdown: string }>,
+    generateReorganisation: (args: GenerateNotesReorganisationArgs) => Promise<{ reorganisedMarkdown: string }>,
+    getSecret: () => string | undefined,
+    startedAt: number,
+    now: () => number
+): Promise<void> {
+    let transformType: TransformJobOperation = "summarise";
+    let notesChars = 0;
+    let notesWords = 0;
+    let targetSectionCount = 0;
+    let noteStyleCategory = "absent";
+
+    try {
+        verifyBearerSecret(req, getSecret());
+        const body = await readJsonBody(req);
+        transformType = validateJobOperation(body);
+
+        if (transformType === "summarise") {
+            const validated = validateSharedRequest(body, "summarise");
+            notesChars = validated.notesMarkdown.length;
+            notesWords = validated.notesWords;
+            noteStyleCategory = safeNoteStyleCategory(validated.noteStyle);
+
+            const job = createTransformJob(jobStore, "notes-transform-summarise", {
+                notesChars,
+                notesWords,
+                noteStyleCategory,
+                targetSectionCount,
+            });
+
+            void runTransformJob(jobStore, job.jobId, async () => {
+                return generateSummary({
+                    notesMarkdown: validated.notesMarkdown,
+                    noteStyle: validated.noteStyle,
+                });
+            });
+
+            logTransform("success", transformType, startedAt, now(), {
+                notesChars,
+                notesWords,
+                noteStyleCategory,
+                targetSectionCount,
+                code: "job-created",
+            });
+            sendJson(res, 202, { jobId: job.jobId, status: job.status });
+            return;
+        }
+
+        const validated = validateReorganiseRequest(body);
+        notesChars = validated.notesMarkdown.length;
+        notesWords = validated.notesWords;
+        noteStyleCategory = safeNoteStyleCategory(validated.noteStyle);
+        targetSectionCount = validated.targetSections.length;
+
+        const job = createTransformJob(jobStore, "notes-transform-reorganise", {
+            notesChars,
+            notesWords,
+            noteStyleCategory,
+            targetSectionCount,
+        });
+
+        void runTransformJob(jobStore, job.jobId, async () => {
+            return generateReorganisation({
+                notesMarkdown: validated.notesMarkdown,
+                noteStyle: validated.noteStyle,
+                targetSections: validated.targetSections,
+            });
+        });
+
+        logTransform("success", transformType, startedAt, now(), {
+            notesChars,
+            notesWords,
+            noteStyleCategory,
+            targetSectionCount,
+            code: "job-created",
+        });
+        sendJson(res, 202, { jobId: job.jobId, status: job.status });
+    } catch (err) {
+        const httpError = toHttpError(err);
+        logTransform("failure", transformType, startedAt, now(), {
+            notesChars,
+            notesWords,
+            noteStyleCategory,
+            targetSectionCount,
+            code: httpError.code,
+            errorInfo: safeErrorInfo(err),
+        });
+        sendJson(res, httpError.status, {
+            error: {
+                code: httpError.code,
+                message: httpError.message,
+            },
+        });
+    }
+}
+
+function handleGetTransformJob(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+    jobStore: AsyncJobStore,
+    getSecret: () => string | undefined
+): void {
+    try {
+        verifyBearerSecret(req, getSecret());
+        const jobId = pathname.slice(TRANSFORM_JOB_PATH_PREFIX.length);
+        if (!jobId) {
+            sendJson(res, 404, { error: { code: "job-not-found", message: SAFE_ERROR_MESSAGES["job-not-found"] } });
+            return;
+        }
+
+        const job = jobStore.get<TransformJobResult>(jobId);
+        if (!job) {
+            sendJson(res, 404, { error: { code: "job-not-found", message: SAFE_ERROR_MESSAGES["job-not-found"] } });
+            return;
+        }
+
+        sendJson(res, 200, serializeJob(job));
+    } catch (err) {
+        const httpError = toHttpError(err);
+        sendJson(res, httpError.status, {
+            error: {
+                code: httpError.code,
+                message: httpError.message,
+            },
+        });
+    }
+}
+
+function validateJobOperation(body: unknown): TransformJobOperation {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        throw new HttpTransformError(400, "invalid-request", SAFE_ERROR_MESSAGES["invalid-request"]);
+    }
+
+    const operation = (body as { operation?: unknown }).operation;
+    if (operation !== "summarise" && operation !== "reorganise") {
+        throw new HttpTransformError(400, "invalid-request", SAFE_ERROR_MESSAGES["invalid-request"]);
+    }
+    return operation;
+}
+
+function createTransformJob(
+    jobStore: AsyncJobStore,
+    type: AsyncJobType,
+    metadata: {
+        notesChars: number;
+        notesWords: number;
+        noteStyleCategory: string;
+        targetSectionCount: number;
+    }
+): AsyncJobRecord<TransformJobResult> {
+    try {
+        return jobStore.create<TransformJobResult>(type, metadata);
+    } catch (err) {
+        if (err instanceof Error && err.message === "job-store-full") {
+            throw new HttpTransformError(503, "job-store-full", SAFE_ERROR_MESSAGES["job-store-full"]);
+        }
+        throw err;
+    }
+}
+
+async function runTransformJob(
+    jobStore: AsyncJobStore,
+    jobId: string,
+    run: () => Promise<TransformJobResult>
+): Promise<void> {
+    jobStore.start(jobId);
+    try {
+        const result = await run();
+        jobStore.succeed(jobId, result, { resultChars: transformResultChars(result) });
+    } catch (err) {
+        const httpError = toHttpError(err);
+        jobStore.fail(jobId, {
+            code: httpError.code,
+            message: httpError.message,
+        });
+    }
+}
+
+function serializeJob(job: AsyncJobRecord<TransformJobResult>): object {
+    const base: Record<string, unknown> = {
+        jobId: job.jobId,
+        type: job.type,
+        status: job.status,
+        createdAt: new Date(job.createdAt).toISOString(),
+        updatedAt: new Date(job.updatedAt).toISOString(),
+    };
+
+    if (job.completedAt !== undefined) base.completedAt = new Date(job.completedAt).toISOString();
+    if (job.expiresAt !== undefined) base.expiresAt = new Date(job.expiresAt).toISOString();
+    if (job.status === "succeeded" && job.result) base.result = job.result;
+    if (job.status === "failed" && job.error) base.error = job.error;
+    return base;
+}
+
+function transformResultChars(result: TransformJobResult): number {
+    if ("summaryMarkdown" in result) return result.summaryMarkdown.length;
+    return result.reorganisedMarkdown.length;
 }
 
 function verifyBearerSecret(req: IncomingMessage, expectedSecret: string | undefined): void {

@@ -3,6 +3,7 @@ import {
     allGptEvalFixtures,
     formsFinalFixtures,
     formsLiveFixtures,
+    longSessionFixtures,
     notesFinalFixtures,
     notesLiveFixtures,
     notesTransformFixtures,
@@ -10,6 +11,7 @@ import {
     type FormsLiveEvalFixture,
     type EvalConcept,
     type GptEvalFixture,
+    type LongSessionEvalFixture,
     type NotesFinalEvalFixture,
     type NotesLiveEvalFixture,
     type NotesTransformEvalFixture,
@@ -69,7 +71,13 @@ describe("GPT quality eval fixtures", () => {
             "notes-live-repeated-correction",
             "notes-live-tangent-with-action",
         ]);
-        expect(allGptEvalFixtures).toHaveLength(32);
+        expect(longSessionFixtures.map((fixture) => fixture.name)).toEqual([
+            "long-session-steady-meeting",
+            "long-session-topic-shifts",
+            "long-session-repetition-heavy",
+            "long-session-correction-late",
+        ]);
+        expect(allGptEvalFixtures).toHaveLength(36);
     });
 
     it("uses unique fixture names", () => {
@@ -87,6 +95,7 @@ describe("GPT quality eval fixtures", () => {
             if (fixture.kind === "forms-live") assertFormsLiveFixture(fixture);
             if (fixture.kind === "notes-transform") assertNotesTransformFixture(fixture);
             if (fixture.kind === "notes-live") assertNotesLiveFixture(fixture);
+            if (fixture.kind === "long-session") assertLongSessionFixture(fixture);
         }
     });
 
@@ -283,10 +292,25 @@ function assertNotesLiveFixture(fixture: NotesLiveEvalFixture): void {
     expect(fixture.expectedSafetyBehaviour.length).toBeGreaterThan(0);
 }
 
+function assertLongSessionFixture(fixture: LongSessionEvalFixture): void {
+    expect(fixture.noteStyle.trim()).not.toBe("");
+    expect(fixture.description.trim()).not.toBe("");
+    expect(fixture.initialCurrentNotes.trim()).not.toBe("");
+    expect(fixture.steps.length).toBeGreaterThan(0);
+    expect(fixture.expectedGrowthRisk.length).toBeGreaterThan(0);
+
+    for (const step of fixture.steps) {
+        expect(step.elapsedMs).toBeGreaterThan(0);
+        expect(step.pendingTranscript.trim()).not.toBe("");
+        expect(step.sampleAppendMarkdown.trim()).not.toBe("");
+    }
+}
+
 function getRequiredConcepts(fixture: GptEvalFixture): EvalConcept[] {
     if (fixture.kind === "notes-live") return fixture.requiredPatchConcepts;
     if (fixture.kind === "forms-live") return fixture.requiredConcepts ?? [];
     if (fixture.kind === "forms-final") return fixture.requiredConcepts ?? [];
+    if (fixture.kind === "long-session") return [];
     return fixture.requiredConcepts;
 }
 
@@ -294,6 +318,7 @@ function getForbiddenConcepts(fixture: GptEvalFixture): string[] {
     if (fixture.kind === "notes-live") return fixture.forbiddenPatchConcepts;
     if (fixture.kind === "forms-live") return fixture.forbiddenConcepts ?? [];
     if (fixture.kind === "forms-final") return fixture.forbiddenConcepts ?? [];
+    if (fixture.kind === "long-session") return [];
     return fixture.forbiddenConcepts;
 }
 

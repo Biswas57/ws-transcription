@@ -20,6 +20,7 @@ import {
     NOTES_FINAL_SYS_TXT,
 } from "../gpt/notes-final.js";
 import {
+    buildNotesLivePatchRequest,
     NOTES_INCREMENTAL_SYS_TXT,
     NOTES_LIVE_PATCH_RESPONSE_SCHEMA,
     parseNotesLivePatchContent,
@@ -156,6 +157,8 @@ type EvalRequest = {
     input: string;
     maxOutputTokens: number;
     jsonSchema: Parameters<typeof runOpenAIResponsesJson>[0]["jsonSchema"];
+    metadata?: Record<string, string | number | boolean | undefined>;
+    summaryNotes?: string[];
 };
 
 const FORMS_LIVE_RESPONSES_UPDATES_SYS_TXT = `${FORMS_LIVE_SYS_TXT}
@@ -288,11 +291,11 @@ function shouldSelectVariant(flow: SupportedOpenAIEvalFlow, variant: GptEvalVari
 }
 
 export async function runOpenAIEvalCase(evalCase: OpenAIEvalCase): Promise<OpenAIEvalResult> {
-    const request = buildEvalRequest(evalCase);
+    const request = buildOpenAIEvalRequest(evalCase);
     if (evalCase.variant.api === "chat-completions") {
         const response = await runOpenAIChatJson(evalCase, request);
         writeRawOutputIfEnabled(evalCase, response.outputText);
-        return evaluateResponseOutput(evalCase, response);
+        return evaluateResponseOutput(evalCase, response, request);
     }
 
     const response = await runOpenAIResponsesJson({
@@ -307,11 +310,12 @@ export async function runOpenAIEvalCase(evalCase: OpenAIEvalCase): Promise<OpenA
             flow: evalCase.flow,
             fixtureName: evalCase.fixtureName,
             variantName: evalCase.variantName,
+            ...request.metadata,
         },
     });
 
     writeRawOutputIfEnabled(evalCase, response.outputText);
-    return evaluateResponseOutput(evalCase, response);
+    return evaluateResponseOutput(evalCase, response, request);
 }
 
 async function runOpenAIChatJson(
@@ -387,7 +391,7 @@ export function formatOpenAIEvalResults(results: OpenAIEvalResult[]): string {
     return lines.join("\n");
 }
 
-function buildEvalRequest(evalCase: OpenAIEvalCase): EvalRequest {
+export function buildOpenAIEvalRequest(evalCase: OpenAIEvalCase): EvalRequest {
     switch (evalCase.flow) {
         case "forms-live-extraction": {
             const fixture = evalCase.fixture as FormsLiveEvalFixture;
@@ -408,20 +412,27 @@ function buildEvalRequest(evalCase: OpenAIEvalCase): EvalRequest {
         }
         case "notes-live-patch": {
             const fixture = evalCase.fixture as NotesLiveEvalFixture;
-            const transcriptTokens = countTokens(fixture.pendingTranscript);
+            const liveRequest = buildNotesLivePatchRequest(
+                fixture.pendingTranscript,
+                fixture.currentNotes,
+                fixture.noteStyle,
+                []
+            );
             return {
                 label: "eval-notes-live-patch",
                 instructions: NOTES_INCREMENTAL_SYS_TXT,
-                input: JSON.stringify({
-                    note_style: fixture.noteStyle,
-                    current_notes: fixture.currentNotes,
-                    transcript_segment: fixture.pendingTranscript,
-                }),
-                maxOutputTokens: Math.min(
-                    2048,
-                    Math.max(1024, Math.ceil(transcriptTokens * 1.2) + 512)
-                ),
+                input: liveRequest.input,
+                maxOutputTokens: liveRequest.maxOutputTokens,
                 jsonSchema: NOTES_LIVE_PATCH_RESPONSE_SCHEMA,
+                metadata: {
+                    currentNotesChars: liveRequest.currentNotesChars,
+                    currentNotesContextChars: liveRequest.currentNotesContextChars,
+                    contextSavedChars: liveRequest.contextSavedChars,
+                    contextCompacted: liveRequest.contextCompacted,
+                    headingCount: liveRequest.headingCount,
+                    estimatedInputTokens: liveRequest.inputTokens,
+                },
+                summaryNotes: notesLiveContextSummaryNotes(liveRequest),
             };
         }
         case "forms-final": {
@@ -487,10 +498,12 @@ function buildEvalRequest(evalCase: OpenAIEvalCase): EvalRequest {
 
 function evaluateResponseOutput(
     evalCase: OpenAIEvalCase,
-    response: ResponsesJsonCallResult
+    response: ResponsesJsonCallResult,
+    request?: EvalRequest
 ): OpenAIEvalResult {
     const outputChars = response.outputText.length;
     const parsed = parseResponseOutput(evalCase, response.outputText);
+    const requestNotes = request?.summaryNotes ?? [];
 
     if (!parsed.parseSuccess) {
         return baseResult(evalCase, {
@@ -500,7 +513,7 @@ function evaluateResponseOutput(
             durationMs: response.durationMs,
             outputChars,
             usage: response.usage,
-            notes: [parsed.reason],
+            notes: [...requestNotes, parsed.reason],
         });
     }
 
@@ -511,7 +524,10 @@ function evaluateResponseOutput(
         durationMs: response.durationMs,
         outputChars,
         usage: response.usage,
-        notes: response.status === "incomplete" ? ["incomplete-response"] : [],
+        notes: [
+            ...requestNotes,
+            ...(response.status === "incomplete" ? ["incomplete-response"] : []),
+        ],
     });
 }
 
@@ -526,11 +542,7 @@ function parseResponseOutput(
             return {
                 parseSuccess: true,
                 output: {
-                    summaryMarkdown: parseNotesTransformMarkdown(
-                        outputText,
-                        "summaryMarkdown",
-                        ["notesMarkdown", "markdown", "outputMarkdown"]
-                    ),
+                    summaryMarkdown: parseNotesTransformMarkdown(outputText, "summaryMarkdown"),
                 },
             };
         }
@@ -1073,6 +1085,18 @@ function notesLivePatchMarkdown(patch: NotesLivePatch): string {
         ...patch.updates.map((update) => update.appendMarkdown),
         patch.fallbackAppendMarkdown ?? "",
     ].filter((value) => value.trim() !== "").join("\n\n");
+}
+
+function notesLiveContextSummaryNotes(
+    request: ReturnType<typeof buildNotesLivePatchRequest>
+): string[] {
+    return [
+        `contextCompacted=${request.contextCompacted}`,
+        `currentNotesChars=${request.currentNotesChars}`,
+        `currentNotesContextChars=${request.currentNotesContextChars}`,
+        `contextSavedChars=${request.contextSavedChars}`,
+        `headingCount=${request.headingCount}`,
+    ];
 }
 
 function formatOptionalNumber(value: unknown): string {

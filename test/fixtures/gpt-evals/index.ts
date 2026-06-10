@@ -3,11 +3,13 @@ import { formsLiveFixtures } from "./forms-live.js";
 import { notesFinalFixtures } from "./notes-final.js";
 import { notesLiveFixtures } from "./notes-live.js";
 import { notesTransformFixtures } from "./notes-transform.js";
+import { longSessionFixtures } from "./long-session.js";
 import type { GptEvalFixture } from "./types.js";
 
 export {
     formsFinalFixtures,
     formsLiveFixtures,
+    longSessionFixtures,
     notesFinalFixtures,
     notesLiveFixtures,
     notesTransformFixtures,
@@ -20,6 +22,8 @@ export type {
     FormsFinalEvalFixture,
     FormsLiveEvalFixture,
     GptEvalFixture,
+    LongSessionEvalFixture,
+    LongSessionEvalStep,
     NotesFinalEvalFixture,
     NotesLiveEvalFixture,
     NotesTransformEvalFixture,
@@ -31,4 +35,5 @@ export const allGptEvalFixtures: GptEvalFixture[] = [
     ...formsLiveFixtures,
     ...notesTransformFixtures,
     ...notesLiveFixtures,
+    ...longSessionFixtures,
 ];

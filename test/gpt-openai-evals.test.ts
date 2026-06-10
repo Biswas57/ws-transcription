@@ -8,6 +8,7 @@ import {
 import { liveAttributesResponseSchema } from "../gpt/forms.js";
 import { NOTES_LIVE_PATCH_RESPONSE_SCHEMA } from "../gpt/notes-live.js";
 import {
+    buildOpenAIEvalRequest,
     evaluateStaticOpenAIEvalOutput,
     formatOpenAIEvalResults,
     openAIEvalOutputDir,
@@ -123,6 +124,94 @@ describe("OpenAI GPT eval runner", () => {
             "updates",
             "fallbackAppendMarkdown",
         ]);
+    });
+
+    it("builds Notes live eval input through the runtime bounded-context request builder", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: "notes-live" }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-long-current-notes" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+        const fixture = notesLiveFixtures.find((item) => item.name === "notes-live-long-current-notes");
+
+        expect(evalCase).toBeDefined();
+        expect(fixture).toBeDefined();
+        expect(fixture!.currentNotes.length).toBeGreaterThan(6000);
+
+        const request = buildOpenAIEvalRequest(evalCase!);
+        const input = JSON.parse(request.input) as {
+            current_notes: string;
+            transcript_segment: string;
+        };
+
+        expect(input.current_notes).toContain("Compact current notes context for live patching");
+        expect(input.current_notes).toContain("## Existing note outline");
+        expect(input.current_notes).toContain("## Recent note tail");
+        expect(input.current_notes.length).toBeLessThan(fixture!.currentNotes.length);
+        expect(input.current_notes).not.toBe(fixture!.currentNotes);
+        expect(input.transcript_segment).toBe(fixture!.pendingTranscript);
+        expect(request.metadata).toMatchObject({
+            currentNotesChars: fixture!.currentNotes.length,
+            contextCompacted: true,
+        });
+        expect(request.metadata?.currentNotesContextChars).toBeLessThan(fixture!.currentNotes.length);
+        expect(request.metadata?.contextSavedChars).toBeGreaterThan(0);
+        expect(request.metadata?.headingCount).toBeGreaterThan(0);
+    });
+
+    it("keeps short Notes live eval input un-compacted through the same runtime builder", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: "notes-live" }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "early-patch-basic" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+
+        expect(evalCase).toBeDefined();
+        const request = buildOpenAIEvalRequest(evalCase!);
+        const input = JSON.parse(request.input) as { current_notes: string };
+
+        expect(input.current_notes).toBe("");
+        expect(request.metadata).toMatchObject({
+            currentNotesChars: 0,
+            currentNotesContextChars: 0,
+            contextSavedChars: 0,
+            contextCompacted: false,
+            headingCount: 0,
+        });
+    });
+
+    it("formats Notes live context metadata without raw notes, headings, or transcript", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: "notes-live" }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-long-current-notes" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+
+        expect(evalCase).toBeDefined();
+        const request = buildOpenAIEvalRequest(evalCase!);
+        const table = formatOpenAIEvalResults([{
+            fixtureName: evalCase!.fixtureName,
+            flow: evalCase!.flow,
+            variantName: evalCase!.variantName,
+            model: evalCase!.variant.model,
+            reasoningEffort: evalCase!.variant.reasoning,
+            passed: true,
+            parseSuccess: true,
+            durationMs: 0,
+            outputChars: 0,
+            missingRequiredConcepts: [],
+            forbiddenConceptsFound: [],
+            notes: request.summaryNotes ?? [],
+        }]);
+
+        expect(table).toContain("contextCompacted=true");
+        expect(table).toContain("currentNotesChars=");
+        expect(table).toContain("currentNotesContextChars=");
+        expect(table).toContain("contextSavedChars=");
+        expect(table).toContain("headingCount=");
+        expect(table).not.toContain("Incident overview");
+        expect(table).not.toContain("Payment retry failures");
+        expect(table).not.toContain("retry failure screenshots");
     });
 
     it("evaluates static Forms final outputs without an API call", () => {
