@@ -1,7 +1,9 @@
+export type EvalConcept = string | string[];
+
 export type EvalConceptChecks = {
-    requiredConcepts: string[];
+    requiredConcepts: EvalConcept[];
     forbiddenConcepts: string[];
-    expectedOpenQuestions?: string[];
+    expectedOpenQuestions?: EvalConcept[];
     sampleGoodOutput?: string;
 };
 
@@ -32,6 +34,19 @@ export type FormsFinalEvalFixture = {
     forbiddenConcepts?: string[];
 };
 
+export type FormsLiveEvalFixture = {
+    kind: "forms-live";
+    name: string;
+    transcriptSegment: string;
+    fields: EvalField[];
+    currentAttributes?: Record<string, string>;
+    expectedSparseAttributes: Record<string, string>;
+    expectedOmittedFields: string[];
+    forbiddenAttributes: string[];
+    requiredConcepts?: string[];
+    forbiddenConcepts?: string[];
+};
+
 export type NotesTransformEvalFixture = EvalConceptChecks & {
     kind: "notes-transform";
     name: string;
@@ -40,7 +55,7 @@ export type NotesTransformEvalFixture = EvalConceptChecks & {
     currentVisibleNotes: string;
     compressibleConcepts?: string[];
     maxCompressionRatio?: number;
-    expectedSectionHints?: string[];
+    expectedSectionHints?: EvalConcept[];
     minPreservationRatio?: number;
 };
 
@@ -59,5 +74,6 @@ export type NotesLiveEvalFixture = {
 export type GptEvalFixture =
     | NotesFinalEvalFixture
     | FormsFinalEvalFixture
+    | FormsLiveEvalFixture
     | NotesTransformEvalFixture
     | NotesLiveEvalFixture;

@@ -12,7 +12,7 @@ import { extractJsonObjectText, isRecord } from "./json-parsing.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
 import { safeErrorInfo } from "../safe-log.js";
 
-const EXTRACT_SYS_TXT = `\
+export const EXTRACT_SYS_TXT = `\
 You are a structured data extraction agent working across Australian professional, operational, study, and general contexts.
 
 You are given:
@@ -48,7 +48,7 @@ Return ONLY a pure JSON object:
 
 Only keys from allowed_keys. No markdown, no code fences, no extra keys.`;
 
-const FINAL_SYS_TXT = `\
+export const FINAL_SYS_TXT = `\
 You are a final verification agent for structured form extraction across Australian professional, operational, study, and general contexts.
 
 You are given:
@@ -97,7 +97,7 @@ function allowedKeySet(template: FieldDef[]): string[] {
     return template.map((f) => normalizeKey(f.field_name));
 }
 
-function finalAttributesResponseSchema(allowedKeys: string[]) {
+export function finalAttributesResponseSchema(allowedKeys: string[]) {
     const finalAttributeProperties = Object.fromEntries(
         allowedKeys.map((key) => [key, { type: "string" }])
     );
@@ -116,6 +116,29 @@ function finalAttributesResponseSchema(allowedKeys: string[]) {
                 },
             },
             required: ["finalAttributes"],
+        },
+    } as const;
+}
+
+export function liveAttributesResponseSchema(allowedKeys: string[]) {
+    const liveAttributeProperties = Object.fromEntries(
+        allowedKeys.map((key) => [key, { type: "string" }])
+    );
+
+    return {
+        name: "forms_live_attributes_response",
+        schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+                parsedAttributes: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: liveAttributeProperties,
+                    required: allowedKeys,
+                },
+            },
+            required: ["parsedAttributes"],
         },
     } as const;
 }

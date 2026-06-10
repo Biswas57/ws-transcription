@@ -71,7 +71,7 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
     {
         name: "forms-live-reasoning-and-routing",
         flow: "forms-live-extraction",
-        linkedFixtures: ["medical-intake-basic", "correction-overwrite"],
+        linkedFixtures: ["forms-live-basic-short", "forms-live-correction-fragment"],
         latencyClass: "realtime-critical",
         qualityRisks: [
             "short values are missed",
@@ -83,6 +83,7 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
             "extracted field precision",
             "extracted field recall",
             "malformed JSON rate",
+            "schema validity",
         ],
         variants: [
             {
@@ -105,6 +106,16 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
                 productionDefault: false,
                 notes: "Only acceptable if short-value recall and correction handling do not regress.",
             },
+            {
+                name: "candidate-responses-mini-low",
+                api: "responses",
+                model: "gpt-5.4-mini",
+                reasoning: "low",
+                outputMode: "json_schema",
+                role: "candidate",
+                productionDefault: false,
+                notes: "T-083/T-090 strict-schema candidate. Empty string fields are converted back to sparse live attributes for evaluation.",
+            },
         ],
     },
     {
@@ -123,6 +134,7 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
             "rejected patch rate",
             "useful patch rate",
             "duplicate patch rate",
+            "schema validity",
         ],
         variants: [
             {
@@ -160,7 +172,12 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
     {
         name: "forms-final-model-reasoning",
         flow: "forms-final",
-        linkedFixtures: ["medical-intake-basic", "correction-overwrite"],
+        linkedFixtures: [
+            "medical-intake-basic",
+            "correction-overwrite",
+            "unknown-empty-contract",
+            "value-normalisation-and-correction",
+        ],
         latencyClass: "user-waiting",
         qualityRisks: [
             "corrections regress",
@@ -241,7 +258,11 @@ export const gptReasoningExperiments: GptReasoningExperiment[] = [
     {
         name: "summarise-model-reasoning",
         flow: "summarise",
-        linkedFixtures: ["summarise-rca-process"],
+        linkedFixtures: [
+            "summarise-rca-process",
+            "summarise-long-meeting-actions",
+            "summarise-study-repeated-detail",
+        ],
         latencyClass: "background-ish-visible",
         qualityRisks: [
             "summary is too similar to reorganise",

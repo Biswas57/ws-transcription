@@ -7,7 +7,7 @@ import {
 } from "./model-config.js";
 import { openai } from "./provider.js";
 
-const NOTES_INCREMENTAL_SYS_TXT = `\
+export const NOTES_INCREMENTAL_SYS_TXT = `\
 You are a live note-taking scribe in an Australian context.
 
 You are given:
@@ -108,7 +108,32 @@ OUTPUT CONSTRAINTS:
 - Do not return the full notes document.
 - If there are no updates, return exactly {"updates":[]}.`;
 
-function parseNotesLivePatchContent(content: string): NotesLivePatch {
+export const NOTES_LIVE_PATCH_RESPONSE_SCHEMA = {
+    name: "notes_live_patch_response",
+    schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+            updates: {
+                type: "array",
+                items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                        targetHeading: { type: "string" },
+                        targetLevel: { type: "number", enum: [2, 3] },
+                        appendMarkdown: { type: "string" },
+                    },
+                    required: ["targetHeading", "targetLevel", "appendMarkdown"],
+                },
+            },
+            fallbackAppendMarkdown: { type: "string" },
+        },
+        required: ["updates", "fallbackAppendMarkdown"],
+    },
+} as const;
+
+export function parseNotesLivePatchContent(content: string): NotesLivePatch {
     try {
         const parsed = JSON.parse(content) as {
             updates?: unknown;

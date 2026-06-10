@@ -1,3 +1,5 @@
+import type { EvalConcept } from "./fixtures/gpt-evals/types.js";
+
 export function normaliseForConceptMatch(text: string): string {
     return text
         .toLowerCase()
@@ -7,9 +9,13 @@ export function normaliseForConceptMatch(text: string): string {
         .trim();
 }
 
-export function containsAllConcepts(markdown: string, concepts: string[]): string[] {
+export function containsAllConcepts(markdown: string, concepts: EvalConcept[]): string[] {
     const haystack = normaliseForConceptMatch(markdown);
-    return concepts.filter((concept) => !haystack.includes(normaliseForConceptMatch(concept)));
+    return concepts
+        .filter((concept) => !conceptAlternatives(concept).some((alternative) =>
+            haystack.includes(normaliseForConceptMatch(alternative))
+        ))
+        .map(formatConcept);
 }
 
 export function containsForbiddenConcepts(markdown: string, concepts: string[]): string[] {
@@ -46,4 +52,12 @@ export function extractOpenQuestions(markdown: string): string[] {
     }
 
     return questions;
+}
+
+function conceptAlternatives(concept: EvalConcept): string[] {
+    return Array.isArray(concept) ? concept : [concept];
+}
+
+function formatConcept(concept: EvalConcept): string {
+    return Array.isArray(concept) ? concept[0] : concept;
 }

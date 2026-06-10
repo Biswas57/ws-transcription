@@ -24,13 +24,30 @@ export const notesFinalFixtures: NotesFinalEvalFixture[] = [
             "- Lenovo support/escalation flow.",
         ].join("\n"),
         requiredConcepts: [
-            "confirm whether formal RCA is needed",
+            [
+                "confirm whether formal RCA is needed",
+                "confirm whether a formal RCA is actually required",
+                "confirm whether a formal RCA is actually needed",
+            ],
             "capture the software version",
             "verify the support contract",
-            "end of life software generally is not produced",
-            "Legal reviews the final RCA document",
+            [
+                "end of life software generally is not produced",
+                "end of life EOL a formal RCA is generally not produced",
+                "end of life EOL formal RCA is generally not produced",
+                "end of life formal RCA generally not produced",
+            ],
+            [
+                "Legal reviews the final RCA document",
+                "reviewed by Legal before it is provided to a customer",
+                "Legal before customer",
+            ],
             "support scope is limited to Nutanix products",
-            "third party hardware issues go to the OEM vendor",
+            [
+                "third party hardware issues go to the OEM vendor",
+                "third party hardware issues should be escalated to the OEM vendor",
+                "third party hardware issues should be directed to the OEM vendor",
+            ],
         ],
         forbiddenConcepts: [
             "guaranteed RCA document within 2-3 days",
@@ -38,8 +55,16 @@ export const notesFinalFixtures: NotesFinalEvalFixture[] = [
             "data recovery from backup is in RCA scope",
         ],
         expectedOpenQuestions: [
-            "Lenovo escalation flow",
-            "Fujitsu support model",
+            [
+                "Lenovo escalation flow",
+                "Lenovo support escalation flow",
+                "Lenovo support/escalation flow",
+            ],
+            [
+                "Fujitsu support model",
+                "Fujitsu follows the same support model",
+                "Fujitsu uses the same support model",
+            ],
         ],
     },
     {
@@ -53,8 +78,15 @@ export const notesFinalFixtures: NotesFinalEvalFixture[] = [
         ].join(" "),
         currentNotes: "## Photosynthesis\n\n- Chlorophyll captures light.\n- Need to check stomata.",
         requiredConcepts: [
-            "chlorophyll captures light",
-            "glucose stores energy",
+            [
+                "chlorophyll captures light",
+                "chlorophyll to capture light",
+            ],
+            [
+                "glucose stores energy",
+                "stores energy as glucose",
+                "energy as glucose",
+            ],
             "oxygen is released",
         ],
         forbiddenConcepts: [

@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
     allGptEvalFixtures,
     formsFinalFixtures,
+    formsLiveFixtures,
     notesFinalFixtures,
     notesLiveFixtures,
     notesTransformFixtures,
     type FormsFinalEvalFixture,
+    type FormsLiveEvalFixture,
+    type EvalConcept,
     type GptEvalFixture,
     type NotesFinalEvalFixture,
     type NotesLiveEvalFixture,
@@ -31,16 +34,24 @@ describe("GPT quality eval fixtures", () => {
         expect(formsFinalFixtures.map((fixture) => fixture.name)).toEqual([
             "medical-intake-basic",
             "correction-overwrite",
+            "unknown-empty-contract",
+            "value-normalisation-and-correction",
+        ]);
+        expect(formsLiveFixtures.map((fixture) => fixture.name)).toEqual([
+            "forms-live-basic-short",
+            "forms-live-correction-fragment",
         ]);
         expect(notesTransformFixtures.map((fixture) => fixture.name)).toEqual([
             "summarise-rca-process",
+            "summarise-long-meeting-actions",
+            "summarise-study-repeated-detail",
             "reorganise-rca-process",
         ]);
         expect(notesLiveFixtures.map((fixture) => fixture.name)).toEqual([
             "early-patch-basic",
             "side-topic-repetition",
         ]);
-        expect(allGptEvalFixtures).toHaveLength(8);
+        expect(allGptEvalFixtures).toHaveLength(14);
     });
 
     it("uses unique fixture names", () => {
@@ -55,6 +66,7 @@ describe("GPT quality eval fixtures", () => {
 
             if (fixture.kind === "notes-final") assertNotesFinalFixture(fixture);
             if (fixture.kind === "forms-final") assertFormsFinalFixture(fixture);
+            if (fixture.kind === "forms-live") assertFormsLiveFixture(fixture);
             if (fixture.kind === "notes-transform") assertNotesTransformFixture(fixture);
             if (fixture.kind === "notes-live") assertNotesLiveFixture(fixture);
         }
@@ -82,6 +94,8 @@ describe("GPT quality eval fixtures", () => {
         expect(normaliseForConceptMatch("QA-sign off & support")).toBe("qa sign off and support");
         expect(containsAllConcepts(markdown, ["release checklist", "support owner"])).toEqual([]);
         expect(containsAllConcepts(markdown, ["missing concept"])).toEqual(["missing concept"]);
+        expect(containsAllConcepts(markdown, [["support owner", "handover owner"]])).toEqual([]);
+        expect(containsAllConcepts(markdown, [["missing one", "missing two"]])).toEqual(["missing one"]);
         expect(containsForbiddenConcepts(markdown, ["release checklist", "not present"])).toEqual([
             "release checklist",
         ]);
@@ -100,7 +114,7 @@ describe("GPT quality eval fixtures", () => {
         const summariseFixtures = notesTransformFixtures.filter(
             (fixture) => fixture.transform === "summarise"
         );
-        expect(summariseFixtures).toHaveLength(1);
+        expect(summariseFixtures).toHaveLength(3);
 
         for (const fixture of summariseFixtures) {
             expect(fixture.maxCompressionRatio).toBeGreaterThan(0);
@@ -214,6 +228,23 @@ function assertFormsFinalFixture(fixture: FormsFinalEvalFixture): void {
     }
 }
 
+function assertFormsLiveFixture(fixture: FormsLiveEvalFixture): void {
+    expect(fixture.transcriptSegment.trim()).not.toBe("");
+    expect(fixture.fields.length).toBeGreaterThan(0);
+    expect(Object.keys(fixture.expectedSparseAttributes).length).toBeGreaterThan(0);
+    for (const field of fixture.fields) {
+        expect(field.key.trim()).not.toBe("");
+        expect(field.label.trim()).not.toBe("");
+    }
+    const fieldKeys = new Set(fixture.fields.map((field) => field.key));
+    for (const key of Object.keys(fixture.expectedSparseAttributes)) {
+        expect(fieldKeys.has(key)).toBe(true);
+    }
+    for (const key of fixture.expectedOmittedFields) {
+        expect(fieldKeys.has(key)).toBe(true);
+    }
+}
+
 function assertNotesTransformFixture(fixture: NotesTransformEvalFixture): void {
     expect(fixture.noteStyle.trim()).not.toBe("");
     expect(fixture.currentVisibleNotes.trim()).not.toBe("");
@@ -229,14 +260,16 @@ function assertNotesLiveFixture(fixture: NotesLiveEvalFixture): void {
     expect(fixture.expectedSafetyBehaviour.length).toBeGreaterThan(0);
 }
 
-function getRequiredConcepts(fixture: GptEvalFixture): string[] {
+function getRequiredConcepts(fixture: GptEvalFixture): EvalConcept[] {
     if (fixture.kind === "notes-live") return fixture.requiredPatchConcepts;
+    if (fixture.kind === "forms-live") return fixture.requiredConcepts ?? [];
     if (fixture.kind === "forms-final") return fixture.requiredConcepts ?? [];
     return fixture.requiredConcepts;
 }
 
 function getForbiddenConcepts(fixture: GptEvalFixture): string[] {
     if (fixture.kind === "notes-live") return fixture.forbiddenPatchConcepts;
+    if (fixture.kind === "forms-live") return fixture.forbiddenConcepts ?? [];
     if (fixture.kind === "forms-final") return fixture.forbiddenConcepts ?? [];
     return fixture.forbiddenConcepts;
 }

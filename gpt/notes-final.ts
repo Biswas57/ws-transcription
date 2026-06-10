@@ -10,7 +10,7 @@ import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
 import { safeErrorInfo } from "../safe-log.js";
 
-const NOTES_FINAL_SYS_TXT = `\
+export const NOTES_FINAL_SYS_TXT = `\
 You are a professional note editor in an Australian context.
 
 You are given:
@@ -103,7 +103,7 @@ Return ONLY valid JSON:
 
 No markdown fences, no commentary, no extra keys.`;
 
-const NOTES_FINAL_RESPONSE_SCHEMA = {
+export const NOTES_FINAL_RESPONSE_SCHEMA = {
     name: "notes_final_response",
     schema: {
         type: "object",

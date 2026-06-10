@@ -1,6 +1,7 @@
 import { OpenAI } from "openai";
 import { GPT_REQUEST_TIMEOUT_MS } from "./model-config.js";
 import {
+    type SafeUsageMetadata,
     appendSafeNumber,
     safeIdentifierValue,
     safeLogValue,
@@ -22,6 +23,7 @@ export type ResponsesJsonCallResult = {
     status: string;
     incompleteReason: string | null;
     durationMs: number;
+    usage: SafeUsageMetadata;
 };
 
 export async function runOpenAIResponsesJson(args: {
@@ -98,6 +100,7 @@ export async function runOpenAIResponsesJson(args: {
         status,
         incompleteReason,
         durationMs,
+        usage,
     };
 }
 
