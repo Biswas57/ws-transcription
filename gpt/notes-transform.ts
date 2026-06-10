@@ -98,6 +98,8 @@ SUMMARISE REQUIREMENTS:
 - Clean phrasing.
 - Keep already clear and concise sections mostly unchanged.
 - For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.
+- For dense process, RCA, incident-review, support, or training notes, group repeated procedural details under fewer headings. Keep the governing rule, exception, owner/action, constraint, risk, deadline, and open question, but remove repeated step-by-step explanation and repeated examples.
+- When there are many procedural bullets saying similar things, preserve the rule once and merge the rest into a shorter summary.
 - Preserve representative examples that explain or anchor a concept, but shorten long examples to their key point.
 - Remove irrelevant examples and obvious clutter.
 - Compress tangents, side segments, announcements, or off-topic-but-useful content more than the main content unless they are central to the note purpose.
