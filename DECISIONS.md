@@ -164,7 +164,8 @@ audio batch
 - Forms final remains `gpt-5.4` with medium reasoning.
 - Notes final remains `gpt-5.4` with medium reasoning.
 - Summarise remains `gpt-5.4` with medium reasoning; compression issues should be handled through prompt/eval work rather than lowering reasoning by default.
-- Reorganise defaults to `gpt-5.4` with medium reasoning. `FORMIFY_REORGANISE_REASONING=low` may be used for controlled low-reasoning testing and can be rolled back immediately by removing the env var or setting it to `medium`.
+- Reorganise defaults to `gpt-5.4` with low reasoning. `FORMIFY_REORGANISE_REASONING=medium` is the immediate rollback path if preservation quality regresses.
 - Forms live remains on Chat Completions JSON mode.
-- Notes live defaults to Chat Completions JSON mode. `FORMIFY_NOTES_LIVE_PROVIDER=responses` enables the strict-schema Responses candidate, with fallback to Chat on Responses failure or invalid output.
-- Notes live Responses is an opt-in runtime candidate, not a default migration. Existing patch safety filters remain required.
+- Notes live defaults to the Responses strict-schema provider with fallback to Chat on Responses failure or invalid output. `FORMIFY_NOTES_LIVE_PROVIDER=chat` is the immediate rollback path.
+- `FORMIFY_NOTES_LIVE_PROVIDER=responses` explicitly selects the default Notes live Responses provider. Invalid provider values fall back to Responses with a safe warning.
+- Notes live Responses fallback categories are metadata only (`provider_error`, `incomplete_response`, `empty_output`, `parse_failed`, `schema_failed`). Existing patch safety filters remain required after either provider path.

@@ -9,7 +9,7 @@ This ticket evaluates current live Chat Completions JSON-mode paths against Resp
 - Forms live extraction
 - Notes live patch generation
 
-Result: keep production Chat live paths for now.
+Result at the T-083 decision point: keep production Chat live paths at that stage. T-115 later switched Notes live to Responses by default while keeping Forms live on Chat.
 
 After T-083d calibration, the redesigned sparse Forms live Responses schema passed all six Forms live fixtures, matching the current Chat baseline. Notes live Responses passed all seven expanded Notes live fixtures in the calibrated run. Chat passed six of seven and missed the fallback-section placement fixture because it put the training topic under the existing release heading instead of using fallback/new-section structure.
 
@@ -259,7 +259,7 @@ The repeated-run aggregate below applies the final calibrated checker behaviour.
 
 ### Repeated-Run Decision
 
-Do not switch production live routing in T-083/T-090.
+Do not switch production live routing in T-083/T-090 itself.
 
 Forms live remains on Chat because the sparse Responses candidate matched Chat quality but used more tokens and did not show a reliability advantage.
 
@@ -267,13 +267,17 @@ Notes live Responses is now strong enough to justify a separate Notes-live-only 
 
 ### Runtime Prep Applied After Evaluation
 
-T-112 adds the Notes live Responses strict-schema path as an off-by-default runtime candidate behind `FORMIFY_NOTES_LIVE_PROVIDER=responses`.
+T-112 added the Notes live Responses strict-schema path as an off-by-default runtime candidate behind `FORMIFY_NOTES_LIVE_PROVIDER=responses`.
 
-Default production Notes live remains Chat. When the Responses candidate is enabled, Responses errors, incomplete output, empty output, or invalid patch JSON fall back once to the existing Chat path. Existing patch safety filters still apply after model output.
+At the T-112/T-113 prep stage, default production Notes live remained Chat. When the Responses candidate was enabled, Responses errors, incomplete output, empty output, or invalid patch JSON fell back once to the existing Chat path. Existing patch safety filters still apply after model output.
+
+T-113 added canary-readiness guardrails around the runtime candidate. The backend now logs safe provider-mode metadata and fallback categories (`provider_error`, `incomplete_response`, `empty_output`, `parse_failed`, `schema_failed`) without raw transcript, note, prompt, or patch content.
+
+T-115 later switched Notes live to the Responses strict-schema path by default. Rollback remains immediate with `FORMIFY_NOTES_LIVE_PROVIDER=chat`; `FORMIFY_NOTES_LIVE_PROVIDER=responses` explicitly selects the default Responses path.
 
 ## Decision
 
-Keep production Chat live paths for now.
+Keep production Chat live paths at the T-083/T-090 decision point. T-115 later switched Notes live to Responses by default with Chat rollback.
 
 The calibrated run strengthens the case for continuing to evaluate Responses, especially for Notes live, but it does not complete a production migration ticket:
 
@@ -284,13 +288,13 @@ The calibrated run strengthens the case for continuing to evaluate Responses, es
 
 ## Production Change Status
 
-No default production live routing changed.
+T-083/T-090 itself made no default production live routing change.
 
-T-112 added an opt-in Notes live Responses runtime candidate behind `FORMIFY_NOTES_LIVE_PROVIDER=responses`. Default provider routing remains Chat, and WebSocket contracts, HTTP route contracts, runtime dependencies, and default product behaviour are unchanged.
+T-115 later made Notes live Responses the default provider based on repeated Notes-live eval evidence. Forms live remains Chat because Responses matched quality but used more tokens and did not show a reliability advantage. WebSocket contracts, HTTP route contracts, runtime dependencies, and message shapes remain unchanged.
 
 ## Follow-Ups
 
-- Use `FORMIFY_NOTES_LIVE_PROVIDER=responses` only as a controlled opt-in candidate until more production-like validation exists.
-- Add more long/noisy Notes live fixtures before making Responses the default.
-- Define monitoring and rollback criteria before any default Notes live Responses switch.
+- Use `FORMIFY_NOTES_LIVE_PROVIDER=chat` as the immediate rollback if Notes live Responses regresses in production.
+- Add more long/noisy Notes live fixtures before changing Forms live routing.
+- Continue watching safe Notes live provider/fallback diagnostics during the default Responses rollout.
 - Keep Forms live on Chat unless Responses shows a clear reliability win that justifies higher token use.

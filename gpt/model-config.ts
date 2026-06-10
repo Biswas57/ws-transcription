@@ -64,19 +64,21 @@ export function reorganiseReasoningEffort(
     return "low";
 }
 
-export function notesLiveProvider(
+export function getNotesLiveProviderMode(
     env: NodeJS.ProcessEnv = process.env
 ): NotesLiveProvider {
     const value = env.FORMIFY_NOTES_LIVE_PROVIDER?.trim().toLowerCase();
-    if (!value || value === "chat") return "chat";
-    if (value === "responses") return "responses";
+    if (!value || value === "responses") return "responses";
+    if (value === "chat") return "chat";
 
     console.warn(
-        `[model-config] Invalid ${FORMIFY_NOTES_LIVE_PROVIDER}, using chat — ` +
+        `[model-config] Invalid ${FORMIFY_NOTES_LIVE_PROVIDER}, using responses — ` +
         `value: ${safeLogValue(value)}`
     );
-    return "chat";
+    return "responses";
 }
+
+export const notesLiveProvider = getNotesLiveProviderMode;
 
 // Preserves the beginning and end for final passes, but may drop middle content.
 // With the T-005 Phase 1 window this should only trigger for unusually dense
