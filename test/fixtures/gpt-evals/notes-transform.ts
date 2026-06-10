@@ -112,6 +112,49 @@ const STUDY_REPEATED_DETAIL_NOTES = [
     "- Verify the exact ATP count expected for the exam.",
 ].join("\n");
 
+const PROCESS_HEAVY_INCIDENT_REVIEW_NOTES = [
+    "# Incident Review Process Training",
+    "",
+    "## Intake rule",
+    "",
+    "- Support owns the initial incident review intake.",
+    "- Support confirms impact, affected service, customer-facing risk, and available evidence.",
+    "- A formal RCA should only be opened after the evidence threshold is met.",
+    "- The evidence threshold means logs, timeline, owner notes, and customer impact are clear enough to review.",
+    "- The evidence threshold was repeated several times because people often ask for an RCA too early.",
+    "",
+    "## Repeated procedure examples",
+    "",
+    "- Example: if logs are incomplete, support should ask for missing logs before promising an RCA.",
+    "- Example repeated: if the timeline is unclear, support should clarify the timeline before promising an RCA.",
+    "- Example repeated again: if owner notes are missing, support should collect owner notes before promising an RCA.",
+    "- Example repeated once more: if customer impact is unclear, support should clarify impact before promising an RCA.",
+    "",
+    "## Review and approval",
+    "",
+    "- Legal approval is required before any customer-facing RCA is sent.",
+    "- The review owner confirms technical accuracy before legal approval.",
+    "- The communications owner drafts the customer update after legal approval.",
+    "- Customer updates should describe known facts and avoid promising a guaranteed completion date.",
+    "",
+    "## Security and compliance handling",
+    "",
+    "- Security-sensitive tenants require restricted detail sharing.",
+    "- Compliance warnings should stay in the summary even when repeated examples are compressed.",
+    "- Federal or regulated customers may need extra approval before sharing incident details.",
+    "",
+    "## Follow-up actions",
+    "",
+    "- Support owner: collect missing logs and timeline notes.",
+    "- Review owner: confirm whether the evidence threshold is met.",
+    "- Communications owner: prepare customer wording after legal approval.",
+    "",
+    "## Open Questions / Verify",
+    "",
+    "- Confirm whether audit logs are sufficient for review.",
+    "- Verify whether vendor escalation is required before the customer update.",
+].join("\n");
+
 export const notesTransformFixtures: NotesTransformEvalFixture[] = [
     {
         kind: "notes-transform",
@@ -296,6 +339,56 @@ export const notesTransformFixtures: NotesTransformEvalFixture[] = [
             "exact ATP count expected for the exam",
         ],
         maxCompressionRatio: 0.75,
+    },
+    {
+        kind: "notes-transform",
+        name: "summarise-process-heavy-incident-review",
+        transform: "summarise",
+        noteStyle: "training",
+        currentVisibleNotes: PROCESS_HEAVY_INCIDENT_REVIEW_NOTES,
+        requiredConcepts: [
+            [
+                "Support owns the initial incident review intake",
+                "Support owns initial incident review intake",
+            ],
+            [
+                "formal RCA should only be opened after the evidence threshold is met",
+                "formal RCA only after the evidence threshold is met",
+            ],
+            [
+                "Legal approval is required before any customer facing RCA is sent",
+                "Legal approval is required before customer facing RCA",
+            ],
+            [
+                "communications owner drafts the customer update after legal approval",
+                "communications owner prepares customer wording after legal approval",
+            ],
+            [
+                "Security sensitive tenants require restricted detail sharing",
+                "Security sensitive tenants need restricted detail sharing",
+            ],
+            [
+                "customer updates should describe known facts and avoid promising a guaranteed completion date",
+                "avoid promising a guaranteed completion date",
+            ],
+        ],
+        forbiddenConcepts: [
+            "Legal approval is optional",
+            "Security-sensitive tenants can share all details broadly",
+            "completion date is guaranteed",
+        ],
+        compressibleConcepts: [
+            "logs are incomplete",
+            "timeline is unclear",
+            "owner notes are missing",
+            "customer impact is unclear",
+            "evidence threshold was repeated several times",
+        ],
+        expectedOpenQuestions: [
+            "audit logs are sufficient for review",
+            "vendor escalation is required before the customer update",
+        ],
+        maxCompressionRatio: 0.78,
     },
     {
         kind: "notes-transform",
