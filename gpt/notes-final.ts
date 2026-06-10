@@ -8,7 +8,7 @@ import {
 } from "./model-config.js";
 import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
-import { safeErrorInfo } from "../safe-log.js";
+import { formatSafeJsonKeys, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
 
 export const NOTES_FINAL_SYS_TXT = `\
 You are a professional note editor in an Australian context.
@@ -187,6 +187,14 @@ export async function finalizeNotes(
         }
 
         const parsed = JSON.parse(extractJsonObjectText(content)) as { notesMarkdown?: string };
+        const parsedKeys = safeJsonKeys(parsed);
+        if (parsedKeys.length !== 1 || parsedKeys[0] !== "notesMarkdown") {
+            console.warn(
+                `[notes-final] Unexpected response keys, returning current — ` +
+                `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
+            );
+            return currentNotes;
+        }
         const finalized = parsed.notesMarkdown?.trim();
         if (!finalized) {
             console.warn("[notes-final] Missing notesMarkdown key, returning current");

@@ -66,6 +66,7 @@ const SAFE_ERROR_MESSAGES: Record<string, string> = {
     "transform-output-incomplete": "Notes transform output was incomplete.",
     "transform-output-invalid-json": "Notes transform output was invalid.",
     "transform-output-missing-key": "Notes transform output was invalid.",
+    "transform-output-unexpected-key": "Notes transform output was invalid.",
     "transform-provider-error": "Notes transform failed.",
     "transform-service-unavailable": "Notes transform service is unavailable.",
     unauthorised: "Unauthorised.",

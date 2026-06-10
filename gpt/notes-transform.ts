@@ -31,6 +31,7 @@ export type NotesTransformErrorCode =
     | "transform-failed"
     | "transform-output-invalid-json"
     | "transform-output-missing-key"
+    | "transform-output-unexpected-key"
     | "transform-output-empty"
     | "transform-output-error-like"
     | "transform-output-incomplete"
@@ -263,6 +264,21 @@ export function parseNotesTransformMarkdown(
                 break;
             }
         }
+    }
+
+    const acceptedKey = usedAliasKey ?? key;
+    if (typeof value === "string" && (jsonKeys.length !== 1 || jsonKeys[0] !== acceptedKey)) {
+        throw new NotesTransformError(
+            "transform-output-unexpected-key",
+            "Transform response included unexpected keys.",
+            {
+                stage: "unexpected-key",
+                outputChars,
+                jsonKeys,
+                expectedKey: key,
+                usedAliasKey,
+            }
+        );
     }
 
     if (typeof value !== "string") {

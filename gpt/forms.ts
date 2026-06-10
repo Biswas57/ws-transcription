@@ -10,7 +10,7 @@ import {
 } from "./model-config.js";
 import { extractJsonObjectText, isRecord } from "./json-parsing.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
-import { safeErrorInfo } from "../safe-log.js";
+import { formatSafeJsonKeys, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
 
 export const EXTRACT_SYS_TXT = `\
 You are a structured data extraction agent working across Australian professional, operational, study, and general contexts.
@@ -279,6 +279,14 @@ export async function parseFinalAttributes(
         if (!content) { console.warn("[final] Empty response, returning candidates"); return candidateAttributes; }
 
         const parsed = JSON.parse(extractJsonObjectText(content)) as { finalAttributes?: unknown };
+        const parsedKeys = safeJsonKeys(parsed);
+        if (parsedKeys.length !== 1 || parsedKeys[0] !== "finalAttributes") {
+            console.warn(
+                `[final] Unexpected response keys, returning candidates — ` +
+                `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
+            );
+            return candidateAttributes;
+        }
         if (!isRecord(parsed.finalAttributes)) {
             console.warn("[final] Missing finalAttributes key, returning candidates");
             return candidateAttributes;
