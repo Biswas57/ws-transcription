@@ -153,8 +153,11 @@ audio batch
 - OpenAI Responses calls default to `store: false` through the central GPT provider helper.
 - Live Chat Completions calls also set `store: false` where supported by the current SDK.
 - Formify keeps canonical notes and forms app-owned; provider-owned Responses state, Conversations, and `previous_response_id` are not used by default.
-- Runtime logs must not include raw transcripts, notes, prompts, generated markdown, form values, template names, field labels, section names, secrets, tokens, user IDs, emails, or raw session IDs.
-- This is privacy-first backend hygiene only. Medical, HIPAA, or regulated professional use would require separate legal, compliance, security, access-control, audit-log, retention, and incident-response work.
+- Runtime logs must not include raw transcripts, notes markdown, prompts, generated markdown, form values, template names, field labels, section names, raw provider outputs, secrets, tokens, user IDs, emails, or raw session IDs.
+- Safe metadata is allowed: counts, char lengths, durations, token usage, provider status categories, parse/schema failure categories, booleans, and safe hashes where already used.
+- This is privacy-first backend hygiene only, not a medical, HIPAA, legal, or regulated-professional compliance claim.
+- Clinical or professional compliance requires separate legal, compliance, security, access-control, audit-log, retention, and incident-response work.
+- Any future use of provider Conversations, background mode, tools, file search, retained context, or stateful Responses features needs explicit product/privacy review before implementation.
 
 ### GPT Runtime Overrides
 
