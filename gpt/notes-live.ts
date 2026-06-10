@@ -4,10 +4,17 @@ import {
     GPT_MINI_MODEL,
     GPT_REQUEST_TIMEOUT_MS,
     countTokens,
-    notesLiveProvider,
+    getNotesLiveProviderMode,
 } from "./model-config.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
 import { safeErrorInfo } from "../safe-log.js";
+
+type NotesLiveFallbackCategory =
+    | "provider_error"
+    | "incomplete_response"
+    | "empty_output"
+    | "parse_failed"
+    | "schema_failed";
 
 export const NOTES_INCREMENTAL_SYS_TXT = `\
 You are a live note-taking scribe in an Australian context.
@@ -178,6 +185,13 @@ type NotesLivePatchRequest = {
     currentNotesChars: number;
 };
 
+type NotesLivePatchFailure = {
+    category: NotesLiveFallbackCategory;
+    outputChars?: number;
+    durationMs?: number;
+    incompleteReason?: string | null;
+};
+
 function buildNotesLivePatchRequest(
     transcriptSegment: string,
     currentNotes: string,
@@ -221,6 +235,40 @@ function logNotesLivePatchReceived(
     );
 }
 
+function logNotesLiveProviderSelected(
+    provider: "chat" | "responses",
+    request: NotesLivePatchRequest
+): void {
+    console.log(
+        `[notes-incremental-patch] Provider selected — ` +
+        `provider: ${provider}, ` +
+        `transcriptChars: ${request.transcriptChars}, ` +
+        `currentNotesChars: ${request.currentNotesChars}, ` +
+        `inputTokens: ${request.inputTokens}, ` +
+        `maxOutputTokens: ${request.maxOutputTokens}`
+    );
+}
+
+function logNotesLiveFallback(
+    failure: NotesLivePatchFailure,
+    request: NotesLivePatchRequest,
+    errorInfo?: string
+): void {
+    const parts = [
+        `[notes-incremental-patch] Falling back to chat`,
+        `category: ${failure.category}`,
+        `transcriptChars: ${request.transcriptChars}`,
+        `currentNotesChars: ${request.currentNotesChars}`,
+    ];
+
+    if (typeof failure.outputChars === "number") parts.push(`outputChars: ${failure.outputChars}`);
+    if (typeof failure.durationMs === "number") parts.push(`duration: ${failure.durationMs}ms`);
+    if (failure.incompleteReason) parts.push(`incompleteReason: ${failure.incompleteReason}`);
+    if (errorInfo) parts.push(`error: ${errorInfo}`);
+
+    console.warn(parts.join(" — "));
+}
+
 /**
  * Generate append-only live note patch instructions.
  * The model still receives full current notes for section choice and duplicate
@@ -240,25 +288,16 @@ export async function generateNotesIncrementalPatch(
         noteStyle,
         sections
     );
-    const provider = notesLiveProvider();
+    const provider = getNotesLiveProviderMode();
+    logNotesLiveProviderSelected(provider, request);
 
     if (provider === "responses") {
         try {
-            const patch = await generateNotesIncrementalPatchResponses(request);
-            if (!patch.parseFailed) return patch;
-
-            console.warn(
-                `[notes-incremental-patch] Responses output invalid, falling back to chat — ` +
-                `transcriptChars: ${request.transcriptChars}, ` +
-                `currentNotesChars: ${request.currentNotesChars}`
-            );
+            const result = await generateNotesIncrementalPatchResponses(request);
+            if (!result.patch.parseFailed) return result.patch;
+            logNotesLiveFallback(result.failure ?? { category: "parse_failed" }, request);
         } catch (err) {
-            console.error(
-                `[notes-incremental-patch] Responses provider failed, falling back to chat — ` +
-                `transcriptChars: ${request.transcriptChars}, ` +
-                `currentNotesChars: ${request.currentNotesChars}, ` +
-                `error: ${safeErrorInfo(err)}`
-            );
+            logNotesLiveFallback({ category: "provider_error" }, request, safeErrorInfo(err));
         }
 
         return generateNotesIncrementalPatchChat(request, true);
@@ -296,7 +335,7 @@ async function generateNotesIncrementalPatchChat(
 
 async function generateNotesIncrementalPatchResponses(
     request: NotesLivePatchRequest
-): Promise<NotesLivePatch> {
+): Promise<{ patch: NotesLivePatch; failure?: NotesLivePatchFailure }> {
     const response = await runOpenAIResponsesJson({
         label: "notes-incremental-patch",
         model: GPT_MINI_MODEL,
@@ -314,23 +353,89 @@ async function generateNotesIncrementalPatchResponses(
     });
 
     if (response.status === "incomplete") {
-        console.warn(
-            `[notes-incremental-patch] Responses incomplete — ` +
-            `outputChars: ${response.outputText.length}, ` +
-            `reason: ${response.incompleteReason ?? "unknown"}, ` +
-            `duration: ${response.durationMs}ms`
-        );
-        return { updates: [], parseFailed: true };
+        return {
+            patch: { updates: [], parseFailed: true },
+            failure: {
+                category: "incomplete_response",
+                outputChars: response.outputText.length,
+                durationMs: response.durationMs,
+                incompleteReason: response.incompleteReason,
+            },
+        };
     }
 
     if (!response.outputText) {
-        console.warn("[notes-incremental-patch] Responses empty, falling back to chat");
-        return { updates: [], parseFailed: true };
+        return {
+            patch: { updates: [], parseFailed: true },
+            failure: {
+                category: "empty_output",
+                outputChars: 0,
+                durationMs: response.durationMs,
+            },
+        };
     }
 
     const patch = parseNotesLivePatchContent(response.outputText);
+    if (patch.parseFailed) {
+        return {
+            patch,
+            failure: {
+                category: "parse_failed",
+                outputChars: response.outputText.length,
+                durationMs: response.durationMs,
+            },
+        };
+    }
+
+    if (!hasStrictNotesLivePatchShape(response.outputText)) {
+        return {
+            patch: { updates: [], parseFailed: true },
+            failure: {
+                category: "schema_failed",
+                outputChars: response.outputText.length,
+                durationMs: response.durationMs,
+            },
+        };
+    }
+
     logNotesLivePatchReceived(patch, request, "responses", false);
-    return patch;
+    return { patch };
+}
+
+function hasStrictNotesLivePatchShape(content: string): boolean {
+    try {
+        const parsed = JSON.parse(content) as {
+            updates?: unknown;
+            fallbackAppendMarkdown?: unknown;
+        };
+
+        if (!parsed || typeof parsed !== "object") return false;
+        const topLevelKeys = Object.keys(parsed);
+        if (topLevelKeys.length !== 2 ||
+            !topLevelKeys.includes("updates") ||
+            !topLevelKeys.includes("fallbackAppendMarkdown")) return false;
+        if (!Array.isArray(parsed.updates)) return false;
+        if (typeof parsed.fallbackAppendMarkdown !== "string") return false;
+
+        return parsed.updates.every((entry) => {
+            if (!entry || typeof entry !== "object") return false;
+            const raw = entry as {
+                targetHeading?: unknown;
+                targetLevel?: unknown;
+                appendMarkdown?: unknown;
+            };
+            const updateKeys = Object.keys(raw);
+            if (updateKeys.length !== 3 ||
+                !updateKeys.includes("targetHeading") ||
+                !updateKeys.includes("targetLevel") ||
+                !updateKeys.includes("appendMarkdown")) return false;
+            return typeof raw.targetHeading === "string" &&
+                (raw.targetLevel === 2 || raw.targetLevel === 3) &&
+                typeof raw.appendMarkdown === "string";
+        });
+    } catch {
+        return false;
+    }
 }
 
 /**
