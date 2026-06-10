@@ -127,6 +127,7 @@ export const notesTransformFixtures: NotesTransformEvalFixture[] = [
             [
                 "support scope is limited to Nutanix products",
                 "RCA scope is limited to Nutanix products",
+                "RCA support scope covers Nutanix products only",
             ],
             [
                 "third party hardware issues should go to the OEM vendor",
@@ -141,19 +142,23 @@ export const notesTransformFixtures: NotesTransformEvalFixture[] = [
                 "timeline is an estimate not a guarantee",
                 "timelines are estimates not guarantees",
                 "any timeline is an estimate not a guarantee",
+                "estimates are not guarantees",
             ],
             [
                 "Legal reviews the final RCA document",
                 "Legal reviews the final RCA",
+                "Legal must review the final RCA",
                 "legal review before customer release",
             ],
             [
                 "APAC teams coordinate local communications",
                 "APAC teams manage local communications",
+                "APAC manages local communications",
             ],
             [
                 "security sensitive and federal accounts need careful handling",
                 "security sensitive and federal accounts require careful handling",
+                "security sensitive and federal accounts require extra care",
             ],
         ],
         forbiddenConcepts: [
@@ -200,12 +205,31 @@ export const notesTransformFixtures: NotesTransformEvalFixture[] = [
         noteStyle: "meeting",
         currentVisibleNotes: LONG_MEETING_ACTION_NOTES,
         requiredConcepts: [
-            "Friday launch only if QA signs off by Thursday 5pm",
-            "move launch to Monday",
+            [
+                "Friday launch only if QA signs off by Thursday 5pm",
+                "launch Friday only if QA signs off by Thursday 5pm",
+                "launch stays on Friday only if QA signs off by Thursday 5pm",
+            ],
+            [
+                "move launch to Monday",
+                "launch moves to Monday",
+                "otherwise move to Monday",
+            ],
             "payment retry behaviour on slow mobile networks",
-            "Priya owns the payment retry retest",
-            "Marco owns the support handover pack",
-            "Mei owns the legal review request",
+            [
+                "Priya owns the payment retry retest",
+                "Priya to complete the payment retry retest",
+                "Owner Priya",
+            ],
+            [
+                "Marco owns the support handover pack",
+                "Marco owns the handover pack",
+                "Owner Marco",
+            ],
+            [
+                "Mei owns the legal review request",
+                "Owner Mei",
+            ],
             "customer communications should not promise a zero risk launch",
         ],
         forbiddenConcepts: [
@@ -231,13 +255,32 @@ export const notesTransformFixtures: NotesTransformEvalFixture[] = [
         noteStyle: "study",
         currentVisibleNotes: STUDY_REPEATED_DETAIL_NOTES,
         requiredConcepts: [
-            "release energy from glucose",
-            "glucose and oxygen into carbon dioxide water and ATP",
-            "glycolysis happens in the cytoplasm",
-            "glycolysis does not need oxygen",
-            "Krebs cycle happens in the mitochondria",
+            [
+                "release energy from glucose",
+                "releases energy from glucose",
+            ],
+            [
+                "glucose and oxygen into carbon dioxide water and ATP",
+                "glucose oxygen carbon dioxide water ATP",
+            ],
+            [
+                "glycolysis happens in the cytoplasm",
+                "glycolysis occurs in the cytoplasm",
+            ],
+            [
+                "glycolysis does not need oxygen",
+                "glycolysis does not require oxygen",
+                "does not require oxygen",
+            ],
+            [
+                "Krebs cycle happens in the mitochondria",
+                "Krebs cycle occurs in the mitochondria",
+            ],
             "oxygen as the final electron acceptor",
-            "most of the ATP",
+            [
+                "most of the ATP",
+                "most ATP",
+            ],
         ],
         forbiddenConcepts: [
             "glycolysis happens in the mitochondria",

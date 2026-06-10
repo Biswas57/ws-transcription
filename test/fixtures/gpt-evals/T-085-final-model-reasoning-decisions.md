@@ -92,11 +92,87 @@ Keep medium reasoning and treat Summarise quality/compression as a separate prom
 
 Both medium and low failed all Summarise fixtures. Low was faster, but it did not solve compression or concept preservation. The RCA summary remained above the target compression ratio for both variants, and the newer compression-focused fixtures still reported missing concepts. Do not change reasoning based on this data.
 
+T-110 applied the evidence-supported follow-up: the production Summarise prompt now makes the transform a condensed summary rather than a light Reorganise pass. Model, reasoning, route shape, response key, schema, and validation remain unchanged.
+
+## T-110a Summarise Prompt Verification
+
+T-110a ran the Summarise-only opt-in eval against the tightened prompt.
+
+- Date: 2026-06-10
+- Command:
+
+```bash
+NODE_EXTRA_CA_CERTS=/tmp/macos-certs.pem OPENAI_EVALS=1 OPENAI_EVAL_FLOWS=summarise OPENAI_EVALS_WRITE_OUTPUTS=1 OPENAI_EVALS_OUTPUT_DIR=/tmp/formify-gpt-eval-outputs-t110a pnpm exec vitest run test/gpt-openai-evals.test.ts
+```
+
+- Raw output path: `/tmp/formify-gpt-eval-outputs-t110a`
+- Raw outputs committed: no
+- Provider cases: 6
+- Test result: passed, 18 tests
+
+| Fixture | Variant | Pass | Duration | Total tokens | Reasoning tokens | Output chars | Ratio | Main notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `summarise-rca-process` | current medium | no | 6915ms | 1452 | 72 | 1111 | 0.87 | missing=4; compression-ratio-above-target |
+| `summarise-rca-process` | candidate low | no | 4043ms | 1391 | 8 | 1116 | 0.87 | missing=2; compression-ratio-above-target |
+| `summarise-long-meeting-actions` | current medium | no | 5182ms | 1512 | 42 | 1117 | 0.74 | missing=5 |
+| `summarise-long-meeting-actions` | candidate low | no | 3755ms | 1453 | 9 | 1090 | 0.72 | missing=4 |
+| `summarise-study-repeated-detail` | current medium | no | 3482ms | 1407 | 40 | 806 | 0.64 | missing=6 |
+| `summarise-study-repeated-detail` | candidate low | no | 2900ms | 1372 | 9 | 792 | 0.63 | missing=6 |
+
+Prompt assessment:
+
+- Compression improved slightly for `summarise-rca-process` medium (`0.90 -> 0.87`) and `summarise-study-repeated-detail` medium (`0.65 -> 0.64`), but the improvement is not enough to declare Summarise fixed.
+- `summarise-long-meeting-actions` medium remained unchanged on compression ratio (`0.74`) and still missed the same number of concepts.
+- RCA concept preservation regressed on the medium production setting (`missing=1 -> missing=4`), so the stronger prompt may be pushing too hard away from preservation on that fixture.
+- Low reasoning was faster and lower-token again, but it is still not a production default candidate because it did not pass the fixtures or solve preservation reliably.
+
+Decision: keep `gpt-5.4` + medium for Summarise, keep T-110 prompt in place for now, and do not claim the compression issue is fixed. The next Summarise work should inspect the local raw outputs, calibrate phrase-strict missing concepts where justified, and then make a smaller prompt/eval follow-up focused on preserving obligations/actions/constraints while compressing repeated structure.
+
+## T-110b Summarise Concept Preservation Calibration
+
+T-110b inspected the local T-110a raw outputs and calibrated phrase-strict concept checks where the summaries preserved the required meaning in different wording.
+
+- Date: 2026-06-10
+- Raw output path inspected: `/tmp/formify-gpt-eval-outputs-t110a`
+- Raw outputs committed: no
+- Opt-in eval rerun: no; this pass reused the existing T-110a outputs and changed only offline fixture expectations.
+- Prompt changes: none
+- Model/reasoning changes: none
+
+Missing-concept classification for the production medium candidate:
+
+| Fixture | T-110a missing count | Classification | Notes |
+| --- | ---: | --- | --- |
+| `summarise-rca-process` | 4 | present-different-wording | Output preserved Nutanix-only support scope, legal review before release, APAC communications, and security/federal handling using equivalent wording. |
+| `summarise-long-meeting-actions` | 5 | present-different-wording | Output preserved the conditional Friday launch, Monday fallback, owners, payment retry risk, legal review owner, and open questions using owner labels and compressed wording. |
+| `summarise-study-repeated-detail` | 6 | present-different-wording | Output preserved the respiration definition, glucose/oxygen conversion, glycolysis location/no-oxygen rule, Krebs location, oxygen acceptor role, and ATP point using formula notation and heading context. |
+
+Fixture/checker changes:
+
+- Added narrow alternatives for equivalent Summarise wording such as `Legal must review the final RCA`, `launch moves to Monday`, `Owner Priya`, `Owner Marco`, `Owner Mei`, `glucose oxygen carbon dioxide water ATP`, and `produces most ATP`.
+- Did not remove required obligations, owner/action checks, constraints, open questions, or forbidden concepts.
+- Did not relax the RCA compression target, because `summarise-rca-process` still remains above its target ratio.
+
+Calibrated result against the existing T-110a outputs:
+
+| Fixture | Variant | Missing after calibration | Ratio | Remaining issue |
+| --- | --- | ---: | ---: | --- |
+| `summarise-rca-process` | current medium | 0 | 0.87 | compression-ratio-above-target |
+| `summarise-rca-process` | candidate low | 0 | 0.87 | compression-ratio-above-target |
+| `summarise-long-meeting-actions` | current medium | 0 | 0.74 | none from deterministic checks |
+| `summarise-long-meeting-actions` | candidate low | 0 | 0.72 | none from deterministic checks |
+| `summarise-study-repeated-detail` | current medium | 0 | 0.64 | none from deterministic checks |
+| `summarise-study-repeated-detail` | candidate low | 0 | 0.63 | none from deterministic checks |
+
+Decision: keep `gpt-5.4` + medium for Summarise. T-110/T-110b show the concept-preservation failure was mostly phrase-strict fixture matching, not clear content loss. However, do not claim Summarise is solved yet because the RCA fixture is still not compressed enough. Further prompt work should target compression without weakening the priority facts now recognised by the calibrated checks.
+
 ## Reorganise Decision
 
 Keep medium reasoning for now.
 
 Low passed the single Reorganise fixture and was faster, but one fixture is not enough evidence to change production defaults. Add more preservation fixtures before revisiting this.
+
+T-111 applied a controlled override instead of a default change. Reorganise still defaults to medium reasoning, while `FORMIFY_REORGANISE_REASONING=low` enables low reasoning for controlled testing and can be rolled back immediately by removing the env var or setting it to `medium`.
 
 ## Recommendation Before T-083
 
@@ -110,4 +186,4 @@ T-083 should stay scoped to live-path evaluation:
 
 ## Production Change Status
 
-No production defaults were changed by T-085d/T-085e.
+No production defaults were changed by T-085d/T-085e. T-110/T-111 later tightened the Summarise prompt and added an explicit Reorganise low-reasoning override without changing the default model/reasoning settings.

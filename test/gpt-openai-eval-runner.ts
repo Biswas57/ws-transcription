@@ -38,6 +38,7 @@ import {
 } from "../gpt/provider.js";
 import { safeUsageMetadata, type SafeUsageMetadata } from "../safe-log.js";
 import { applyNotesLivePatch, type NotesLivePatch } from "../notes-live-patch.js";
+import { normalizeMarkdownHeading } from "../notes-live-patch.js";
 import {
     compressionRatio,
     containsAllConcepts,
@@ -137,11 +138,17 @@ export type OpenAIEvalResult = {
 
 export type StaticOpenAIEvalOutput =
     | { parsedAttributes: Record<string, string> }
+    | { liveAttributeUpdates: FormsLiveAttributeUpdate[] }
     | { finalAttributes: Record<string, string> }
     | { notesLivePatch: NotesLivePatch }
     | { notesMarkdown: string }
     | { summaryMarkdown: string }
     | { reorganisedMarkdown: string };
+
+export type FormsLiveAttributeUpdate = {
+    fieldKey: string;
+    value: string;
+};
 
 type EvalRequest = {
     label: string;
@@ -150,6 +157,20 @@ type EvalRequest = {
     maxOutputTokens: number;
     jsonSchema: Parameters<typeof runOpenAIResponsesJson>[0]["jsonSchema"];
 };
+
+const FORMS_LIVE_RESPONSES_UPDATES_SYS_TXT = `${FORMS_LIVE_SYS_TXT}
+
+STRICT EVAL OUTPUT OVERRIDE:
+For this Responses strict-schema eval, return ONLY this sparse shape:
+{"updates":[{"fieldKey":"allowed_key","value":"new or corrected value"}]}
+
+Rules:
+- Use only allowed_keys as fieldKey.
+- Include only fields with new or corrected information from transcript_segment.
+- Do not include unknown, unmentioned, vague, side-topic, or already-complete fields.
+- If a correction is spoken, include only the corrected value.
+- If a field is explicitly not applicable, use "N/A".
+- If there are no safe updates, return {"updates":[]}.`;
 
 const supportedFlowSet = new Set<GptEvalFlow>(supportedOpenAIEvalFlows);
 type OpenAIEvalsEnv = Partial<Record<
@@ -373,7 +394,9 @@ function buildEvalRequest(evalCase: OpenAIEvalCase): EvalRequest {
             const allowedKeys = fixture.fields.map((field) => field.key);
             return {
                 label: "eval-forms-live",
-                instructions: FORMS_LIVE_SYS_TXT,
+                instructions: evalCase.variant.api === "responses"
+                    ? FORMS_LIVE_RESPONSES_UPDATES_SYS_TXT
+                    : FORMS_LIVE_SYS_TXT,
                 input: JSON.stringify({
                     allowed_keys: allowedKeys,
                     current_values: fixture.currentAttributes ?? {},
@@ -531,6 +554,13 @@ function parseResponseOutput(
             };
         }
 
+        if (evalCase.flow === "forms-live-extraction" && Array.isArray(parsed.updates)) {
+            return {
+                parseSuccess: true,
+                output: { liveAttributeUpdates: parseFormsLiveUpdates(parsed.updates) },
+            };
+        }
+
         if (evalCase.flow === "notes-live-patch") {
             const patch = parseNotesLivePatchContent(outputText);
             if (patch.parseFailed) return { parseSuccess: false, reason: "invalid-json" };
@@ -587,7 +617,11 @@ function evaluateParsedOutput(
 
     if (evalCase.flow === "forms-live-extraction") {
         const fixture = evalCase.fixture as FormsLiveEvalFixture;
-        const parsedAttributes = "parsedAttributes" in output ? output.parsedAttributes : {};
+        const parsedAttributes = "liveAttributeUpdates" in output
+            ? formsLiveUpdatesToSparseAttributes(output.liveAttributeUpdates)
+            : "parsedAttributes" in output
+                ? output.parsedAttributes
+                : {};
         const sparseAttributes = sparseNonEmptyRecord(parsedAttributes);
         forms = evaluateFormsLive(fixture, sparseAttributes);
         missingRequiredConcepts = forms.expectedFieldMismatchCount > 0
@@ -613,6 +647,7 @@ function evaluateParsedOutput(
         const patch = "notesLivePatch" in output ? output.notesLivePatch : { updates: [] };
         const appliedMarkdown = applyNotesLivePatch(fixture.currentNotes, patch);
         const patchMarkdown = notesLivePatchMarkdown(patch);
+        const appliedDeltaMarkdown = addedMarkdownLines(fixture.currentNotes, appliedMarkdown);
         const appliedChanged = appliedMarkdown !== fixture.currentNotes;
         const hasPatchContent = patchMarkdown.trim().length > 0;
         notesLive = {
@@ -624,12 +659,32 @@ function evaluateParsedOutput(
         };
 
         missingRequiredConcepts = containsAllConcepts(appliedMarkdown, fixture.requiredPatchConcepts);
-        forbiddenConceptsFound = containsForbiddenConcepts(patchMarkdown || appliedMarkdown, fixture.forbiddenPatchConcepts);
+        forbiddenConceptsFound = containsForbiddenConcepts(appliedDeltaMarkdown, fixture.forbiddenPatchConcepts);
         headingCount = countMarkdownHeadings(appliedMarkdown);
         bulletCount = countMarkdownBullets(appliedMarkdown);
 
         if (!appliedChanged) notes.push("no-applied-change");
         if (notesLive.rejectedBySafetyFilter) notes.push("rejected-by-safety-filter");
+        if (/^#\s+/m.test(appliedDeltaMarkdown)) notes.push("document-title-in-applied-notes");
+        if (/^#\s+/m.test(patchMarkdown) && !/^#\s+/m.test(appliedDeltaMarkdown)) {
+            notes.push("document-title-filtered");
+        }
+
+        const repeatedLines = repeatedExistingLines(fixture.currentNotes, appliedMarkdown);
+        if (repeatedLines.length > 0) notes.push(`repeated-existing-lines:${repeatedLines.length}`);
+
+        if (fixture.expectedFallbackUsed !== undefined &&
+            notesLive.fallbackUsed !== fixture.expectedFallbackUsed) {
+            notes.push(fixture.expectedFallbackUsed ? "expected-fallback-missing" : "unexpected-fallback-used");
+        }
+
+        if (fixture.expectedTargetHeading) {
+            const expectedHeading = normalizeMarkdownHeading(fixture.expectedTargetHeading);
+            const matchedHeading = patch.updates.some((update) =>
+                normalizeMarkdownHeading(update.targetHeading) === expectedHeading
+            );
+            if (!matchedHeading) notes.push("expected-heading-not-targeted");
+        }
     } else {
         const markdown = markdownFromOutput(output);
         const fixture = evalCase.fixture as NotesFinalEvalFixture | NotesTransformEvalFixture;
@@ -681,7 +736,12 @@ function evaluateParsedOutput(
         note === "suspiciously-short" ||
         note === "incomplete-response" ||
         note === "no-applied-change" ||
-        note === "rejected-by-safety-filter"
+        note === "rejected-by-safety-filter" ||
+        note === "document-title-in-applied-notes" ||
+        note === "expected-fallback-missing" ||
+        note === "unexpected-fallback-used" ||
+        note === "expected-heading-not-targeted" ||
+        note.startsWith("repeated-existing-lines:")
     );
     const passed = metadata.parseSuccess &&
         failedNotes.length === 0 &&
@@ -783,7 +843,7 @@ function evaluateFormsLive(
 
     for (const [key, expectedValue] of Object.entries(fixture.expectedSparseAttributes)) {
         const actualValue = actual[key] ?? "";
-        if (actualValue === expectedValue) {
+        if (matchesExpectedLiveValue(fixture, key, actualValue, expectedValue)) {
             expectedFieldMatchCount++;
         } else {
             expectedFieldMismatchCount++;
@@ -808,7 +868,7 @@ function evaluateFormsLive(
 
     for (const [key, expectedValue] of Object.entries(fixture.expectedSparseAttributes)) {
         if (expectedValue === "N/A") {
-            if (actual[key] === "N/A") {
+            if (matchesExpectedLiveValue(fixture, key, actual[key] ?? "", expectedValue)) {
                 notApplicableCorrectCount++;
             } else {
                 notApplicableMismatchCount++;
@@ -885,12 +945,16 @@ function markdownFromOutput(output: StaticOpenAIEvalOutput): string {
     if ("reorganisedMarkdown" in output) return output.reorganisedMarkdown;
     if ("notesLivePatch" in output) return notesLivePatchMarkdown(output.notesLivePatch);
     if ("parsedAttributes" in output) return Object.values(output.parsedAttributes).join("\n");
+    if ("liveAttributeUpdates" in output) {
+        return Object.values(formsLiveUpdatesToSparseAttributes(output.liveAttributeUpdates)).join("\n");
+    }
     return Object.values(output.finalAttributes).join("\n");
 }
 
 function staticOutputChars(output: StaticOpenAIEvalOutput): number {
     if ("finalAttributes" in output) return JSON.stringify(output.finalAttributes).length;
     if ("parsedAttributes" in output) return JSON.stringify(output.parsedAttributes).length;
+    if ("liveAttributeUpdates" in output) return JSON.stringify(output.liveAttributeUpdates).length;
     return markdownFromOutput(output).length;
 }
 
@@ -904,6 +968,103 @@ function sparseNonEmptyRecord(record: Record<string, string>): Record<string, st
     return Object.fromEntries(
         Object.entries(record).filter(([, value]) => value.trim() !== "")
     );
+}
+
+function parseFormsLiveUpdates(updates: unknown[]): FormsLiveAttributeUpdate[] {
+    return updates.flatMap((entry): FormsLiveAttributeUpdate[] => {
+        if (!isRecord(entry)) return [];
+        const fieldKey = entry.fieldKey;
+        const value = entry.value;
+        if (typeof fieldKey !== "string" || typeof value !== "string") return [];
+        return [{ fieldKey, value }];
+    });
+}
+
+function formsLiveUpdatesToSparseAttributes(
+    updates: FormsLiveAttributeUpdate[]
+): Record<string, string> {
+    const result: Record<string, string> = {};
+
+    for (const update of updates) {
+        const fieldKey = update.fieldKey.trim();
+        const value = update.value.trim();
+        if (!fieldKey || !value) continue;
+        result[fieldKey] = value;
+    }
+
+    return result;
+}
+
+function matchesExpectedLiveValue(
+    fixture: FormsLiveEvalFixture,
+    key: string,
+    actualValue: string,
+    expectedValue: string
+): boolean {
+    return [
+        expectedValue,
+        ...(fixture.expectedSparseAttributeAlternatives?.[key] ?? []),
+    ].some((value) => actualValue === value);
+}
+
+function repeatedExistingLines(existingMarkdown: string, appliedMarkdown: string): string[] {
+    const existingCounts = meaningfulLineCounts(existingMarkdown);
+    const appliedCounts = meaningfulLineCounts(appliedMarkdown);
+    const repeated: string[] = [];
+
+    for (const [line, existingCount] of existingCounts.entries()) {
+        const appliedCount = appliedCounts.get(line) ?? 0;
+        if (appliedCount > existingCount) repeated.push(line);
+    }
+
+    return repeated;
+}
+
+function meaningfulLineCounts(markdown: string): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const line of meaningfulLines(markdown)) {
+        const normalized = line.toLowerCase();
+        counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+    return counts;
+}
+
+function addedMarkdownLines(existingMarkdown: string, appliedMarkdown: string): string {
+    const existingCounts = lineCounts(existingMarkdown);
+    const addedLines: string[] = [];
+
+    for (const line of appliedMarkdown.split(/\r?\n/)) {
+        const normalized = normalizeMarkdownLineForDiff(line);
+        const existingCount = existingCounts.get(normalized) ?? 0;
+        if (normalized && existingCount > 0) {
+            existingCounts.set(normalized, existingCount - 1);
+            continue;
+        }
+        addedLines.push(line);
+    }
+
+    return addedLines.join("\n");
+}
+
+function lineCounts(markdown: string): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const line of markdown.split(/\r?\n/)) {
+        const normalized = normalizeMarkdownLineForDiff(line);
+        if (!normalized) continue;
+        counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+    return counts;
+}
+
+function normalizeMarkdownLineForDiff(line: string): string {
+    return line.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function meaningfulLines(markdown: string): string[] {
+    return markdown
+        .split(/\r?\n/)
+        .map((line) => line.trim().replace(/^[-*]\s+/, "").replace(/^#{1,3}\s+/, ""))
+        .filter((line) => line.length >= 24);
 }
 
 function notesLivePatchMarkdown(patch: NotesLivePatch): string {

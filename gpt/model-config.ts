@@ -1,5 +1,6 @@
 import { get_encoding } from "@dqbd/tiktoken";
 import dotenv from "dotenv";
+import { safeLogValue } from "../safe-log.js";
 
 dotenv.config();
 
@@ -9,6 +10,12 @@ export const GPT_REVISION_REASONING_EFFORT = "none" as const;
 export const GPT_LIVE_REASONING_EFFORT = "low" as const;
 export const GPT_FINAL_REASONING_EFFORT = "medium" as const;
 export const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
+
+export type ReorganiseReasoningEffort = "low" | "medium";
+export type NotesLiveProvider = "chat" | "responses";
+
+const FORMIFY_REORGANISE_REASONING = "FORMIFY_REORGANISE_REASONING";
+const FORMIFY_NOTES_LIVE_PROVIDER = "FORMIFY_NOTES_LIVE_PROVIDER";
 
 export const DEFAULT_REVISION_MIN_CHARS = 15;
 export const NOTES_REVISION_MIN_CHARS = 40;
@@ -41,6 +48,34 @@ const tokenCounter = get_encoding("o200k_base");
 
 export function countTokens(text: string): number {
     return tokenCounter.encode(text).length;
+}
+
+export function reorganiseReasoningEffort(
+    env: NodeJS.ProcessEnv = process.env
+): ReorganiseReasoningEffort {
+    const value = env.FORMIFY_REORGANISE_REASONING?.trim().toLowerCase();
+    if (!value || value === "medium") return "medium";
+    if (value === "low") return "low";
+
+    console.warn(
+        `[model-config] Invalid ${FORMIFY_REORGANISE_REASONING}, using medium — ` +
+        `value: ${safeLogValue(value)}`
+    );
+    return "medium";
+}
+
+export function notesLiveProvider(
+    env: NodeJS.ProcessEnv = process.env
+): NotesLiveProvider {
+    const value = env.FORMIFY_NOTES_LIVE_PROVIDER?.trim().toLowerCase();
+    if (!value || value === "chat") return "chat";
+    if (value === "responses") return "responses";
+
+    console.warn(
+        `[model-config] Invalid ${FORMIFY_NOTES_LIVE_PROVIDER}, using chat — ` +
+        `value: ${safeLogValue(value)}`
+    );
+    return "chat";
 }
 
 // Preserves the beginning and end for final passes, but may drop middle content.

@@ -4,8 +4,10 @@ import {
     GPT_MINI_MODEL,
     GPT_REQUEST_TIMEOUT_MS,
     countTokens,
+    notesLiveProvider,
 } from "./model-config.js";
-import { openai } from "./provider.js";
+import { openai, runOpenAIResponsesJson } from "./provider.js";
+import { safeErrorInfo } from "../safe-log.js";
 
 export const NOTES_INCREMENTAL_SYS_TXT = `\
 You are a live note-taking scribe in an Australian context.
@@ -168,6 +170,57 @@ export function parseNotesLivePatchContent(content: string): NotesLivePatch {
     }
 }
 
+type NotesLivePatchRequest = {
+    input: string;
+    inputTokens: number;
+    maxOutputTokens: number;
+    transcriptChars: number;
+    currentNotesChars: number;
+};
+
+function buildNotesLivePatchRequest(
+    transcriptSegment: string,
+    currentNotes: string,
+    noteStyle: string,
+    sections: string[]
+): NotesLivePatchRequest {
+    const transcriptTokens = countTokens(transcriptSegment);
+    return {
+        input: JSON.stringify({
+            note_style: noteStyle,
+            sections: sections.length > 0 ? sections : undefined,
+            current_notes: currentNotes || "",
+            transcript_segment: transcriptSegment,
+        }),
+        inputTokens: transcriptTokens + countTokens(currentNotes),
+        maxOutputTokens: Math.min(
+            2048,
+            Math.max(1024, Math.ceil(transcriptTokens * 1.2) + 512)
+        ),
+        transcriptChars: transcriptSegment.length,
+        currentNotesChars: currentNotes.length,
+    };
+}
+
+function logNotesLivePatchReceived(
+    patch: NotesLivePatch,
+    request: NotesLivePatchRequest,
+    provider: "chat" | "responses",
+    fallbackUsed: boolean
+): void {
+    console.log(
+        `[notes-incremental-patch] Patch received — ` +
+        `provider: ${provider}, ` +
+        `fallbackUsed: ${fallbackUsed}, ` +
+        `updates: ${patch.updates.length}, ` +
+        `fallbackChars: ${patch.fallbackAppendMarkdown?.length ?? 0}, ` +
+        `transcriptChars: ${request.transcriptChars}, ` +
+        `currentNotesChars: ${request.currentNotesChars}, ` +
+        `inputTokens: ${request.inputTokens}, ` +
+        `maxOutputTokens: ${request.maxOutputTokens}`
+    );
+}
+
 /**
  * Generate append-only live note patch instructions.
  * The model still receives full current notes for section choice and duplicate
@@ -181,29 +234,51 @@ export async function generateNotesIncrementalPatch(
 ): Promise<NotesLivePatch> {
     if (transcriptSegment.trim().length < 20) return { updates: [] };
 
-    const transcriptTokens = countTokens(transcriptSegment);
-    const inputTokens = transcriptTokens + countTokens(currentNotes);
-    const maxOutputTokens = Math.min(
-        2048,
-        Math.max(1024, Math.ceil(transcriptTokens * 1.2) + 512)
+    const request = buildNotesLivePatchRequest(
+        transcriptSegment,
+        currentNotes,
+        noteStyle,
+        sections
     );
+    const provider = notesLiveProvider();
 
+    if (provider === "responses") {
+        try {
+            const patch = await generateNotesIncrementalPatchResponses(request);
+            if (!patch.parseFailed) return patch;
+
+            console.warn(
+                `[notes-incremental-patch] Responses output invalid, falling back to chat — ` +
+                `transcriptChars: ${request.transcriptChars}, ` +
+                `currentNotesChars: ${request.currentNotesChars}`
+            );
+        } catch (err) {
+            console.error(
+                `[notes-incremental-patch] Responses provider failed, falling back to chat — ` +
+                `transcriptChars: ${request.transcriptChars}, ` +
+                `currentNotesChars: ${request.currentNotesChars}, ` +
+                `error: ${safeErrorInfo(err)}`
+            );
+        }
+
+        return generateNotesIncrementalPatchChat(request, true);
+    }
+
+    return generateNotesIncrementalPatchChat(request, false);
+}
+
+async function generateNotesIncrementalPatchChat(
+    request: NotesLivePatchRequest,
+    fallbackUsed: boolean
+): Promise<NotesLivePatch> {
     const completion = await openai.chat.completions.create({
         model: GPT_MINI_MODEL,
         store: false,
         messages: [
             { role: "system", content: NOTES_INCREMENTAL_SYS_TXT },
-            {
-                role: "user",
-                content: JSON.stringify({
-                    note_style: noteStyle,
-                    sections: sections.length > 0 ? sections : undefined,
-                    current_notes: currentNotes || "",
-                    transcript_segment: transcriptSegment,
-                }),
-            },
+            { role: "user", content: request.input },
         ],
-        max_completion_tokens: maxOutputTokens,
+        max_completion_tokens: request.maxOutputTokens,
         response_format: { type: "json_object" },
         reasoning_effort: GPT_LIVE_REASONING_EFFORT,
     }, { timeout: GPT_REQUEST_TIMEOUT_MS });
@@ -215,15 +290,46 @@ export async function generateNotesIncrementalPatch(
     }
 
     const patch = parseNotesLivePatchContent(content);
-    console.log(
-        `[notes-incremental-patch] Patch received — ` +
-        `updates: ${patch.updates.length}, ` +
-        `fallbackChars: ${patch.fallbackAppendMarkdown?.length ?? 0}, ` +
-        `transcriptChars: ${transcriptSegment.length}, ` +
-        `currentNotesChars: ${currentNotes.length}, ` +
-        `inputTokens: ${inputTokens}, ` +
-        `maxOutputTokens: ${maxOutputTokens}`
-    );
+    logNotesLivePatchReceived(patch, request, "chat", fallbackUsed);
+    return patch;
+}
+
+async function generateNotesIncrementalPatchResponses(
+    request: NotesLivePatchRequest
+): Promise<NotesLivePatch> {
+    const response = await runOpenAIResponsesJson({
+        label: "notes-incremental-patch",
+        model: GPT_MINI_MODEL,
+        reasoningEffort: GPT_LIVE_REASONING_EFFORT,
+        instructions: NOTES_INCREMENTAL_SYS_TXT,
+        input: request.input,
+        maxOutputTokens: request.maxOutputTokens,
+        jsonSchema: NOTES_LIVE_PATCH_RESPONSE_SCHEMA,
+        metadata: {
+            providerMode: "responses",
+            transcriptChars: request.transcriptChars,
+            currentNotesChars: request.currentNotesChars,
+            estimatedInputTokens: request.inputTokens,
+        },
+    });
+
+    if (response.status === "incomplete") {
+        console.warn(
+            `[notes-incremental-patch] Responses incomplete — ` +
+            `outputChars: ${response.outputText.length}, ` +
+            `reason: ${response.incompleteReason ?? "unknown"}, ` +
+            `duration: ${response.durationMs}ms`
+        );
+        return { updates: [], parseFailed: true };
+    }
+
+    if (!response.outputText) {
+        console.warn("[notes-incremental-patch] Responses empty, falling back to chat");
+        return { updates: [], parseFailed: true };
+    }
+
+    const patch = parseNotesLivePatchContent(response.outputText);
+    logNotesLivePatchReceived(patch, request, "responses", false);
     return patch;
 }
 

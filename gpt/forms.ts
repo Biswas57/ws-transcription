@@ -121,24 +121,26 @@ export function finalAttributesResponseSchema(allowedKeys: string[]) {
 }
 
 export function liveAttributesResponseSchema(allowedKeys: string[]) {
-    const liveAttributeProperties = Object.fromEntries(
-        allowedKeys.map((key) => [key, { type: "string" }])
-    );
-
     return {
-        name: "forms_live_attributes_response",
+        name: "forms_live_attribute_updates_response",
         schema: {
             type: "object",
             additionalProperties: false,
             properties: {
-                parsedAttributes: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: liveAttributeProperties,
-                    required: allowedKeys,
+                updates: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        additionalProperties: false,
+                        properties: {
+                            fieldKey: { type: "string", enum: allowedKeys },
+                            value: { type: "string" },
+                        },
+                        required: ["fieldKey", "value"],
+                    },
                 },
             },
-            required: ["parsedAttributes"],
+            required: ["updates"],
         },
     } as const;
 }

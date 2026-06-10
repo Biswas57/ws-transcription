@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 const openAiMock = vi.hoisted(() => {
     const chatCreate = vi.fn();
@@ -29,9 +29,13 @@ import {
     generateNotesReorganisation,
     generateNotesSummary,
     generateNotesIncremental,
+    generateNotesIncrementalPatch,
     parseFinalAttributes,
     reviseTranscription,
 } from "../parse-gpt.js";
+
+const ORIGINAL_REORGANISE_REASONING = process.env.FORMIFY_REORGANISE_REASONING;
+const ORIGINAL_NOTES_LIVE_PROVIDER = process.env.FORMIFY_NOTES_LIVE_PROVIDER;
 
 const LONG_NOTES = [
     "# Session Notes",
@@ -102,6 +106,22 @@ describe("parse-gpt stabilisation", () => {
     beforeEach(() => {
         openAiMock.chatCreate.mockReset();
         openAiMock.responsesCreate.mockReset();
+        delete process.env.FORMIFY_REORGANISE_REASONING;
+        delete process.env.FORMIFY_NOTES_LIVE_PROVIDER;
+    });
+
+    afterEach(() => {
+        if (ORIGINAL_REORGANISE_REASONING === undefined) {
+            delete process.env.FORMIFY_REORGANISE_REASONING;
+        } else {
+            process.env.FORMIFY_REORGANISE_REASONING = ORIGINAL_REORGANISE_REASONING;
+        }
+
+        if (ORIGINAL_NOTES_LIVE_PROVIDER === undefined) {
+            delete process.env.FORMIFY_NOTES_LIVE_PROVIDER;
+        } else {
+            process.env.FORMIFY_NOTES_LIVE_PROVIDER = ORIGINAL_NOTES_LIVE_PROVIDER;
+        }
     });
 
     it("runs incremental extraction for one-word Forms values", async () => {
@@ -334,6 +354,173 @@ describe("parse-gpt stabilisation", () => {
         )).resolves.toBe(current);
     });
 
+    it("keeps Notes live on Chat by default and falls back to Chat for invalid provider config", async () => {
+        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "invalid-provider";
+        const configWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        openAiMock.create.mockResolvedValueOnce({
+            choices: [{
+                message: {
+                    content: JSON.stringify({
+                        updates: [{
+                            targetHeading: "Decisions",
+                            targetLevel: 2,
+                            appendMarkdown: "- Chat path still owns default live notes.",
+                        }],
+                    }),
+                },
+            }],
+        });
+
+        try {
+            const patch = await generateNotesIncrementalPatch(
+                "Chat path still owns default live notes.",
+                "## Decisions\n\n- Existing decision.",
+                "meeting",
+                ["Decisions"]
+            );
+
+            expect(patch.updates).toHaveLength(1);
+            expect(openAiMock.create).toHaveBeenCalledTimes(1);
+            expect(openAiMock.responsesCreate).not.toHaveBeenCalled();
+            expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+            expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
+            expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
+            expect(configWarn.mock.calls[0]?.[0]).toContain("Invalid FORMIFY_NOTES_LIVE_PROVIDER");
+            expect(configWarn.mock.calls[0]?.[0]).toContain("using chat");
+        } finally {
+            configWarn.mockRestore();
+        }
+    });
+
+    it("can use the opt-in Notes live Responses strict-schema provider", async () => {
+        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "responses";
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({
+                updates: [{
+                    targetHeading: "Decisions",
+                    targetLevel: 2,
+                    appendMarkdown: "- Responses path can produce the same patch shape.",
+                }],
+                fallbackAppendMarkdown: "",
+            }))
+        );
+
+        const patch = await generateNotesIncrementalPatch(
+            "Responses path can produce the same patch shape.",
+            "## Decisions\n\n- Existing decision.",
+            "meeting",
+            ["Decisions"]
+        );
+
+        expect(patch).toEqual({
+            updates: [{
+                targetHeading: "Decisions",
+                targetLevel: 2,
+                appendMarkdown: "- Responses path can produce the same patch shape.",
+            }],
+            fallbackAppendMarkdown: "",
+        });
+        expect(openAiMock.create).not.toHaveBeenCalled();
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
+        expect(request.model).toBe("gpt-5.4-mini");
+        expect(request.store).toBe(false);
+        expect(request.reasoning).toEqual({ effort: "low" });
+        expect(request.text?.format).toMatchObject({
+            type: "json_schema",
+            name: "notes_live_patch_response",
+            strict: true,
+        });
+        expect(request.text?.format?.schema).toMatchObject({
+            type: "object",
+            additionalProperties: false,
+            required: ["updates", "fallbackAppendMarkdown"],
+        });
+    });
+
+    it("applies opt-in Notes live Responses patches through the existing markdown patcher", async () => {
+        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "responses";
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({
+                updates: [{
+                    targetHeading: "Decisions",
+                    targetLevel: 2,
+                    appendMarkdown: "- Responses update still becomes full markdown for legacy callers.",
+                }],
+                fallbackAppendMarkdown: "",
+            }))
+        );
+
+        const result = await generateNotesIncremental(
+            "Responses update still becomes full markdown for legacy callers.",
+            "## Decisions\n\n- Existing decision.",
+            "meeting",
+            ["Decisions"]
+        );
+
+        expect(result).toContain("## Decisions");
+        expect(result).toContain("- Existing decision.");
+        expect(result).toContain("- Responses update still becomes full markdown for legacy callers.");
+        expect(result).not.toContain("\"updates\"");
+    });
+
+    it("falls back to Chat when opt-in Notes live Responses fails or returns invalid output", async () => {
+        for (const responseOrError of [
+            provider400Error(),
+            responsesJson("not json"),
+            responsesJson(
+                JSON.stringify({
+                    updates: [{
+                        targetHeading: "Decisions",
+                        targetLevel: 2,
+                        appendMarkdown: "- Partial Responses patch.",
+                    }],
+                    fallbackAppendMarkdown: "",
+                }),
+                {
+                    status: "incomplete",
+                    incomplete_details: { reason: "max_output_tokens" },
+                }
+            ),
+        ]) {
+            process.env.FORMIFY_NOTES_LIVE_PROVIDER = "responses";
+            if (responseOrError instanceof Error) {
+                openAiMock.responsesCreate.mockRejectedValueOnce(responseOrError);
+            } else {
+                openAiMock.responsesCreate.mockResolvedValueOnce(responseOrError);
+            }
+            openAiMock.create.mockResolvedValueOnce({
+                choices: [{
+                    message: {
+                        content: JSON.stringify({
+                            updates: [{
+                                targetHeading: "Decisions",
+                                targetLevel: 2,
+                                appendMarkdown: "- Chat fallback preserved the live update.",
+                            }],
+                        }),
+                    },
+                }],
+            });
+
+            await expect(generateNotesIncrementalPatch(
+                "Chat fallback preserved the live update.",
+                "## Decisions\n\n- Existing decision.",
+                "meeting",
+                ["Decisions"]
+            )).resolves.toMatchObject({
+                updates: [{
+                    targetHeading: "Decisions",
+                    targetLevel: 2,
+                    appendMarkdown: "- Chat fallback preserved the live update.",
+                }],
+            });
+        }
+
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(3);
+        expect(openAiMock.create).toHaveBeenCalledTimes(3);
+    });
+
     it("uses final reasoning effort for Notes finalisation", async () => {
         openAiMock.responsesCreate.mockResolvedValueOnce(
             responsesJson(JSON.stringify({ notesMarkdown: "## Summary\n\n- Final note." }))
@@ -419,19 +606,25 @@ describe("parse-gpt stabilisation", () => {
         expect(request.instructions).toContain("Transform current visible notes only.");
         expect(request.instructions).toContain("Do not add a Quick Checklist unless explicitly requested in the notes.");
         expect(request.instructions).toContain("Compression should be adaptive");
-        expect(request.instructions).toContain("preserving the existing structure where it is already useful, and simplifying it where it is overly detailed or repetitive");
+        expect(request.instructions).toContain("Produce a condensed summary, not a cleaned-up rewrite and not a reorganised version.");
+        expect(request.instructions).toContain("preserving the existing structure only where it helps reviewability");
         expect(request.instructions).toContain("Preserve existing structure where it improves reviewability.");
+        expect(request.instructions).toContain("Do not behave like Reorganise");
         expect(request.instructions).toContain("produce a visibly shorter review version");
         expect(request.instructions).toContain("Long notes should usually be meaningfully shorter");
         expect(request.instructions).toContain("do not force an exact percentage");
-        expect(request.instructions).toContain("a useful summary may be around 60-75% of the original length");
+        expect(request.instructions).toContain("aim roughly for 50-75% of the original length");
         expect(request.instructions).toContain("accuracy and reviewability are more important than hitting a fixed ratio");
+        expect(request.instructions).toContain("merge related sections");
+        expect(request.instructions).toContain("reduce low-value headings and subheadings");
         expect(request.instructions).toContain("reduce both wording and structure");
         expect(request.instructions).toContain("avoid preserving a one-to-one outline of the source");
         expect(request.instructions).toContain("clearly different from a reorganised version of the same notes");
-        expect(request.instructions).toContain("Remove repeated framing, duplicated explanation, transcript-like wording, and overly granular supporting detail.");
+        expect(request.instructions).toContain("Remove repeated examples, repeated explanation, repeated framing, transcript-like wording, and overly granular supporting detail.");
         expect(request.instructions).toContain("Merge small or overlapping bullets where meaning is preserved.");
-        expect(request.instructions).toContain("Compress supporting detail while preserving key facts, dates, numbers, names, definitions, actions, caveats, risks, commands, IDs, technical terms, product names, and representative examples.");
+        expect(request.instructions).toContain("Do not preserve every bullet; preserve the important meaning.");
+        expect(request.instructions).toContain("Prefer shorter wording.");
+        expect(request.instructions).toContain("preserving decisions, actions, owners, deadlines, risks, blockers, obligations, constraints, open questions, safety-critical facts, explicit user-provided constraints");
         expect(request.instructions).toContain("If a question is answered elsewhere in current_visible_notes");
         expect(request.instructions).toContain("For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.");
         expect(request.instructions).toContain("Use only current_visible_notes.");
@@ -553,6 +746,59 @@ describe("parse-gpt stabilisation", () => {
         expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).target_sections).toEqual(["Concepts", "Actions"]);
+    });
+
+    it("uses low reasoning for Reorganise only when explicitly configured", async () => {
+        process.env.FORMIFY_REORGANISE_REASONING = "low";
+        const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
+        openAiMock.responsesCreate
+            .mockResolvedValueOnce(responsesJson(JSON.stringify({ reorganisedMarkdown: reorganised })))
+            .mockResolvedValueOnce(responsesJson(JSON.stringify({ summaryMarkdown: "## Summary\n\n- Condensed." })))
+            .mockResolvedValueOnce(responsesJson(JSON.stringify({ notesMarkdown: "## Summary\n\n- Final note." })))
+            .mockResolvedValueOnce(responsesJson(JSON.stringify({ finalAttributes: { answer: "yes" } })));
+
+        await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
+            reorganisedMarkdown: reorganised,
+        });
+        await expect(generateNotesSummary({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
+            summaryMarkdown: "## Summary\n\n- Condensed.",
+        });
+        await expect(finalizeNotes(
+            "This is a sufficiently detailed transcript for the final notes pass.",
+            "## Draft\n\n- Existing note.",
+            "meeting",
+            ["Summary"]
+        )).resolves.toBe("## Summary\n\n- Final note.");
+        await expect(parseFinalAttributes(
+            "yes",
+            [{ block_name: "main", field_name: "answer" }],
+            { answer: "" }
+        )).resolves.toEqual({ answer: "yes" });
+
+        expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "low" });
+        expect(openAiMock.responsesCreate.mock.calls[1][0].reasoning).toEqual({ effort: "medium" });
+        expect(openAiMock.responsesCreate.mock.calls[2][0].reasoning).toEqual({ effort: "medium" });
+        expect(openAiMock.responsesCreate.mock.calls[3][0].reasoning).toEqual({ effort: "medium" });
+    });
+
+    it("falls back to medium for invalid Reorganise reasoning config", async () => {
+        process.env.FORMIFY_REORGANISE_REASONING = "fast";
+        const configWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
+        openAiMock.responsesCreate.mockResolvedValueOnce(
+            responsesJson(JSON.stringify({ reorganisedMarkdown: reorganised }))
+        );
+
+        try {
+            await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
+                reorganisedMarkdown: reorganised,
+            });
+            expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "medium" });
+            expect(configWarn.mock.calls[0]?.[0]).toContain("Invalid FORMIFY_REORGANISE_REASONING");
+            expect(configWarn.mock.calls[0]?.[0]).toContain("using medium");
+        } finally {
+            configWarn.mockRestore();
+        }
     });
 
     it("rejects malformed, missing, and suspiciously short reorganise output", async () => {

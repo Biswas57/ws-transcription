@@ -41,6 +41,7 @@ export type FormsLiveEvalFixture = {
     fields: EvalField[];
     currentAttributes?: Record<string, string>;
     expectedSparseAttributes: Record<string, string>;
+    expectedSparseAttributeAlternatives?: Record<string, string[]>;
     expectedOmittedFields: string[];
     forbiddenAttributes: string[];
     requiredConcepts?: string[];
@@ -65,9 +66,11 @@ export type NotesLiveEvalFixture = {
     noteStyle: string;
     currentNotes: string;
     pendingTranscript: string;
-    requiredPatchConcepts: string[];
+    requiredPatchConcepts: EvalConcept[];
     forbiddenPatchConcepts: string[];
     expectedSafetyBehaviour: string[];
+    expectedFallbackUsed?: boolean;
+    expectedTargetHeading?: string;
     sampleGoodOutput?: string;
 };
 

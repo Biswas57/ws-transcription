@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Status: live-only opt-in eval completed on 2026-06-10.
+Status: expanded and calibrated live-only opt-in eval completed on 2026-06-10.
 
 This ticket evaluates current live Chat Completions JSON-mode paths against Responses API strict Structured Outputs candidates for:
 
@@ -11,7 +11,11 @@ This ticket evaluates current live Chat Completions JSON-mode paths against Resp
 
 Result: keep production Chat live paths for now.
 
-The Notes live Responses candidate matched the current Chat baseline on the two small fixtures and had one faster and one slightly slower run. The Forms live Responses candidate failed both fixtures while the Chat baseline passed both. Responses strict schemas remain promising for shape reliability, but this run does not justify migrating production live routing.
+After T-083d calibration, the redesigned sparse Forms live Responses schema passed all six Forms live fixtures, matching the current Chat baseline. Notes live Responses passed all seven expanded Notes live fixtures in the calibrated run. Chat passed six of seven and missed the fallback-section placement fixture because it put the training topic under the existing release heading instead of using fallback/new-section structure.
+
+T-083e/T-083f added four harder Notes live fixtures and repeated the Notes-only matrix three times. Across 33 Notes live cases per variant, Responses passed `31/33` and Chat passed `28/33`. Responses was stronger on fallback/new-topic section placement, while Chat remained slightly cheaper and lower-latency on aggregate.
+
+Responses remains promising, especially for Notes live, but this is still an evaluation ticket. The repeated run is not a production migration, and Responses still showed higher average token use plus occasional semantic failures.
 
 No production live routing changed.
 
@@ -39,47 +43,98 @@ No production live routing changed.
 - Expected output shape: append-only patch JSON with `updates` and optional `fallbackAppendMarkdown`
 - Runtime behaviour: patch is applied by `applyNotesLivePatch`, so schema-valid output still goes through append-only safety filters
 
-## Candidate Responses Design
+## Expanded Fixture Coverage
 
-### Forms live candidate
+### Forms live
 
-- API: Responses
-- Model: `gpt-5.4-mini`
-- Reasoning: `low`
-- Storage: `store: false`
-- Structured output: strict `text.format` JSON Schema
-- Schema name: `forms_live_attributes_response`
-- Shape:
-  - top-level object with `parsedAttributes`
-  - `parsedAttributes` is an object with finite field keys from the fixture/template
-  - `additionalProperties: false`
-  - every known field key is required by the schema and may be an empty string
-- Eval conversion:
-  - empty strings are converted back to the current sparse live semantics before scoring
-  - hidden or unknown keys are not allowed by schema
+Expanded from 2 to 6 fixtures:
 
-### Notes live candidate
+- `forms-live-basic-short`
+- `forms-live-correction-fragment`
+- `forms-live-sparse-unknowns`
+- `forms-live-correction-normalisation`
+- `forms-live-explicit-na`
+- `forms-live-noisy-fragment`
 
-- API: Responses
-- Model: `gpt-5.4-mini`
-- Reasoning: `low`
-- Storage: `store: false`
-- Structured output: strict `text.format` JSON Schema
-- Schema name: `notes_live_patch_response`
-- Shape:
-  - `updates`: array of `{ targetHeading, targetLevel, appendMarkdown }`
-  - `fallbackAppendMarkdown`: string
-  - `additionalProperties: false`
-- Eval conversion:
-  - output is parsed into the current `NotesLivePatch` shape
-  - patch is applied with the existing `applyNotesLivePatch` safety filters
-  - eval checks whether useful content survives the safety filter and avoids forbidden concepts
+Coverage now includes short values, corrections, value normalisation, sparse unknown handling, explicit non-applicability, and irrelevant side chatter.
 
-## Eval Execution
+### Notes live
+
+Expanded from 2 to 11 fixtures:
+
+- `early-patch-basic`
+- `side-topic-repetition`
+- `notes-live-long-current-notes`
+- `notes-live-heading-reuse`
+- `notes-live-fallback-section`
+- `notes-live-unsafe-or-repeated`
+- `notes-live-side-topic-main-topic-balance`
+- `notes-live-long-meeting-rolling-context`
+- `notes-live-lecture-topic-shift`
+- `notes-live-repeated-correction`
+- `notes-live-tangent-with-action`
+
+Coverage now includes long current notes, heading reuse, fallback section creation, repeated old content, title-like unsafe speech, side-topic containment, rolling context, topic shifts, corrections, and tangent/action separation.
+
+## Candidate Schema Update
+
+The first Forms live Responses candidate used a full known-field object:
+
+```json
+{ "parsedAttributes": { "field_key": "value or empty string" } }
+```
+
+That was strict, but it may have pressured the model to consider every field. The expanded eval replaces it with a sparse updates candidate:
+
+```json
+{
+  "updates": [
+    { "fieldKey": "<known-field-key>", "value": "new or corrected value" }
+  ]
+}
+```
+
+Rules:
+
+- `fieldKey` is an enum of the known fixture/template keys.
+- `updates` may be empty.
+- Unknown fields are schema-invalid.
+- Empty-string updates are ignored by eval conversion.
+- Duplicate updates are resolved deterministically with last-write-wins.
+
+This is eval-only scaffolding. Production Forms live extraction still uses Chat Completions and the current sparse `parsedAttributes` contract.
+
+## Failure Calibration
+
+### `forms-live-explicit-na`
+
+- Chat classification: acceptable alternate live wording.
+- Responses classification: acceptable alternate live wording.
+- Fixture/checker changed: yes. Forms live now allows fixture-side alternatives for explicit non-applicability wording. Forms final remains strict: unknown fields return `""`, explicit non-applicability returns `N/A`.
+- Remains a blocker: no.
+- Migration meaning: this is not evidence for Responses migration. It clarifies that live Forms can be sparse and semantically correct without always using the final canonical `N/A` spelling.
+
+### `notes-live-fallback-section`
+
+- Chat classification: product-quality weakness in live structure. The content was useful, but it was appended under the existing release heading instead of creating/using fallback/new-section structure for a separate training topic.
+- Responses classification: checker phrase issue fixed. Responses created safe standalone fallback structure; the missing concept was present through equivalent section wording.
+- Fixture/checker changed: yes. Required concept alternatives now include the section wording seen in useful safe outputs.
+- Remains a blocker: yes for production migration confidence, especially for live section-placement quality.
+- Migration meaning: Responses outperformed Chat on this single calibrated fixture, but one fixture/run is not enough to migrate production live routing.
+
+### `notes-live-unsafe-or-repeated`
+
+- Chat classification: acceptable model behaviour after calibration. The output captured the new owner and did not duplicate the old legal-review warning.
+- Responses classification: acceptable model behaviour after calibration. The output captured the new owner and did not duplicate the old legal-review warning.
+- Fixture/checker changed: yes. Notes live forbidden checks now score newly applied patch lines instead of raw model output or the whole canonical note. Quoted title wording is allowed when the output explicitly says not to use it as a title; actual applied `#` document-title markdown remains a failure.
+- Remains a blocker: no in the calibrated run.
+- Migration meaning: safety filters/checkers should continue scoring the applied patch state, because raw patch text is not necessarily the user-visible canonical note.
+
+## Calibrated Live Eval Execution
 
 - Date: 2026-06-10
-- Matrix: live-only
-- Provider cases: 8
+- Matrix: live-only calibrated single run
+- Provider cases: 26
 - Command:
 
 ```bash
@@ -88,71 +143,154 @@ NODE_EXTRA_CA_CERTS=/tmp/macos-certs.pem OPENAI_EVALS=1 OPENAI_EVAL_FLOWS=forms-
 
 - Raw output path: `/tmp/formify-gpt-eval-outputs`
 - Raw outputs committed: no
-- Test result: passed, 13 tests
+- Test result: passed, 18 tests
 
-## Results Table
+## Calibrated Single-Run Results Table
 
 | Flow | Fixture | Variant | API | Pass | Duration | Total tokens | Reasoning tokens | Output chars | Main notes |
 | ---- | ------- | ------- | --- | ---: | -------: | -----------: | ---------------: | -----------: | ---------- |
-| forms-live-extraction | forms-live-basic-short | current-chat-mini-low | Chat | yes | 1724ms | 637 | 12 | 88 | - |
-| forms-live-extraction | forms-live-basic-short | candidate-responses-mini-low | Responses | no | 5879ms | 708 | 16 | 114 | missing=1 |
-| forms-live-extraction | forms-live-correction-fragment | current-chat-mini-low | Chat | yes | 1484ms | 712 | 82 | 100 | - |
-| forms-live-extraction | forms-live-correction-fragment | candidate-responses-mini-low | Responses | no | 1882ms | 824 | 119 | 178 | forbidden=1 |
-| notes-live-patch | early-patch-basic | current-chat-mini-low | Chat | yes | 2239ms | 1287 | 16 | 203 | - |
-| notes-live-patch | early-patch-basic | candidate-responses-mini-low | Responses | yes | 1229ms | 1361 | 11 | 216 | - |
-| notes-live-patch | side-topic-repetition | current-chat-mini-low | Chat | yes | 1219ms | 1304 | 12 | 151 | - |
-| notes-live-patch | side-topic-repetition | candidate-responses-mini-low | Responses | yes | 1335ms | 1389 | 26 | 151 | - |
+| forms-live-extraction | forms-live-basic-short | current-chat-mini-low | Chat | yes | 1678ms | 637 | 12 | 88 | - |
+| forms-live-extraction | forms-live-basic-short | candidate-responses-mini-low | Responses | yes | 1956ms | 840 | 13 | 142 | - |
+| forms-live-extraction | forms-live-correction-fragment | current-chat-mini-low | Chat | yes | 1501ms | 687 | 57 | 111 | - |
+| forms-live-extraction | forms-live-correction-fragment | candidate-responses-mini-low | Responses | yes | 1041ms | 866 | 34 | 154 | - |
+| forms-live-extraction | forms-live-sparse-unknowns | current-chat-mini-low | Chat | yes | 1196ms | 647 | 10 | 92 | - |
+| forms-live-extraction | forms-live-sparse-unknowns | candidate-responses-mini-low | Responses | yes | 1002ms | 866 | 29 | 125 | - |
+| forms-live-extraction | forms-live-correction-normalisation | current-chat-mini-low | Chat | yes | 1584ms | 660 | 23 | 85 | - |
+| forms-live-extraction | forms-live-correction-normalisation | candidate-responses-mini-low | Responses | yes | 1000ms | 869 | 31 | 139 | - |
+| forms-live-extraction | forms-live-explicit-na | current-chat-mini-low | Chat | yes | 1576ms | 676 | 49 | 91 | - |
+| forms-live-extraction | forms-live-explicit-na | candidate-responses-mini-low | Responses | yes | 1585ms | 894 | 67 | 113 | - |
+| forms-live-extraction | forms-live-noisy-fragment | current-chat-mini-low | Chat | yes | 981ms | 624 | 5 | 45 | - |
+| forms-live-extraction | forms-live-noisy-fragment | candidate-responses-mini-low | Responses | yes | 1083ms | 832 | 26 | 57 | - |
+| notes-live-patch | early-patch-basic | current-chat-mini-low | Chat | yes | 1499ms | 1290 | 11 | 216 | - |
+| notes-live-patch | early-patch-basic | candidate-responses-mini-low | Responses | yes | 1022ms | 1372 | 22 | 218 | - |
+| notes-live-patch | side-topic-repetition | current-chat-mini-low | Chat | yes | 1108ms | 1302 | 10 | 155 | - |
+| notes-live-patch | side-topic-repetition | candidate-responses-mini-low | Responses | yes | 1038ms | 1377 | 14 | 151 | - |
+| notes-live-patch | notes-live-long-current-notes | current-chat-mini-low | Chat | yes | 1590ms | 1436 | 54 | 424 | - |
+| notes-live-patch | notes-live-long-current-notes | candidate-responses-mini-low | Responses | yes | 1547ms | 1488 | 47 | 366 | - |
+| notes-live-patch | notes-live-heading-reuse | current-chat-mini-low | Chat | yes | 1118ms | 1291 | 7 | 157 | - |
+| notes-live-patch | notes-live-heading-reuse | candidate-responses-mini-low | Responses | yes | 839ms | 1364 | 9 | 157 | - |
+| notes-live-patch | notes-live-fallback-section | current-chat-mini-low | Chat | no | 1558ms | 1311 | 16 | 282 | expected-fallback-missing |
+| notes-live-patch | notes-live-fallback-section | candidate-responses-mini-low | Responses | yes | 1214ms | 1379 | 34 | 189 | - |
+| notes-live-patch | notes-live-unsafe-or-repeated | current-chat-mini-low | Chat | yes | 2105ms | 1336 | 42 | 140 | - |
+| notes-live-patch | notes-live-unsafe-or-repeated | candidate-responses-mini-low | Responses | yes | 1646ms | 1463 | 78 | 228 | - |
+| notes-live-patch | notes-live-side-topic-main-topic-balance | current-chat-mini-low | Chat | yes | 1010ms | 1296 | 14 | 167 | - |
+| notes-live-patch | notes-live-side-topic-main-topic-balance | candidate-responses-mini-low | Responses | yes | 974ms | 1366 | 13 | 167 | - |
 
 ## Forms Live Findings
 
-The Chat baseline passed both Forms live fixtures. The Responses strict-schema candidate failed both.
+The sparse Responses candidate fixed the most obvious design problem from the first run. It no longer had to emit a full known-field object with empty strings, and it passed all six Forms live fixtures in the calibrated run.
 
 Findings:
 
-- Chat preserved the expected short value and sparse attributes in the basic fixture.
-- Responses produced valid schema-shaped JSON, but missed the exact expected fee normalisation in the basic fixture.
-- Chat handled the correction fragment and explicit non-applicability case.
-- Responses handled the correction and explicit non-applicability fields, but also populated a forbidden allowed field with transcript-like supporting text.
-- Responses prevented hidden/unknown keys through schema shape, but strict schema did not prevent semantically wrong allowed-field population.
-- Responses was slower and used more total tokens on both Forms live fixtures in this run.
+- Chat baseline: `6/6`.
+- Responses sparse candidate: `6/6`.
+- Live explicit non-applicability accepts equivalent live wording; Forms final remains strict.
+- Responses produced schema-shaped sparse updates.
+- Responses used more total tokens on every Forms live fixture in this run.
+- Latency was mixed; Responses was faster on some fixtures and slower on others.
 
-Decision for Forms live: do not migrate. Keep Chat live extraction and add more live fixtures before reconsidering.
+Decision for Forms live: keep Chat. The sparse Responses candidate is much improved, but it is not clearly better than the current live path and uses more tokens.
 
 ## Notes Live Findings
 
-Both Chat and Responses passed both Notes live fixtures.
+Responses passed all expanded Notes live fixtures in this calibrated run. Chat passed six of seven.
 
 Findings:
 
-- Both variants produced useful early structure for an empty notes session.
-- Both variants kept repeated/side-topic content out of the support-triage update.
-- No live patch output failed parsing.
-- No patch was rejected by the existing safety filter.
-- Responses was faster on `early-patch-basic` and slightly slower on `side-topic-repetition`.
-- Responses used slightly more total tokens overall in these two fixtures.
-- Strict schema may reduce malformed patch risk, but this tiny fixture set does not prove a production migration is safe.
+- Chat baseline: `6/7`.
+- Responses strict-schema candidate: `7/7`.
+- Both variants handled long current notes, heading reuse, side-topic balance, and unsafe/repeated-title wording after calibration.
+- Chat missed the fallback-section placement check by appending separate training content under the existing release heading.
+- Responses used slightly more total tokens on every Notes live fixture in this run.
+- Responses remained schema-valid and went through the same backend patch safety filters.
 
-Decision for Notes live: Responses is promising, but needs more fixtures and repeated runs before migration.
+Decision for Notes live: Responses is promising, but not ready for production migration from one calibrated run. Keep Chat until repeated runs and more long-session fixtures confirm the quality/latency/token tradeoff.
+
+## Repeated Notes Live Evaluation
+
+### Expanded Notes Fixture Coverage
+
+T-083e added four harder Notes live fixtures:
+
+- `notes-live-long-meeting-rolling-context`: long existing notes with a narrow customer-communications update.
+- `notes-live-lecture-topic-shift`: new lecture topic that should create fallback/new-topic structure instead of corrupting the current topic.
+- `notes-live-repeated-correction`: correction to an existing backup-window detail without preserving the contradicted value.
+- `notes-live-tangent-with-action`: useful action item mixed with low-value tangent details.
+
+### Repeated Run Setup
+
+- Date: 2026-06-10
+- Matrix: Notes live only
+- Repeats: 3
+- Provider cases per repeat: 22
+- Command shape:
+
+```bash
+NODE_EXTRA_CA_CERTS=/tmp/macos-certs.pem OPENAI_EVALS=1 OPENAI_EVAL_FLOWS=notes-live OPENAI_EVALS_WRITE_OUTPUTS=1 OPENAI_EVALS_OUTPUT_DIR=/tmp/formify-gpt-eval-outputs-t083f-runN pnpm exec vitest run test/gpt-openai-evals.test.ts
+```
+
+- Raw output paths: `/tmp/formify-gpt-eval-outputs-t083f-run1`, `/tmp/formify-gpt-eval-outputs-t083f-run2`, `/tmp/formify-gpt-eval-outputs-t083f-run3`
+- Raw outputs committed: no
+
+The repeated-run aggregate below applies the final calibrated checker behaviour. A false-positive forbidden-heading check for `# Cellular Respiration` was removed because it also matched safe `## Cellular Respiration` fallback headings.
+
+### Aggregate Results
+
+| Variant | Runs | Cases | Passes | Pass rate | Avg duration | P90 duration | Avg total tokens | P90 total tokens | Avg reasoning tokens | Main failure pattern |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Chat | 3 | 33 | 28 | 84.8% | 1422ms | 1722ms | 1329 | 1404 | 19 | Fallback/new-section headings sometimes emitted inside `updates[].appendMarkdown`, then rejected by the patch safety filter. |
+| Responses | 3 | 33 | 31 | 93.9% | 1507ms | 2718ms | 1416 | 1463 | 39 | One fallback safety-filter miss and one tangent-inclusion miss; generally better section placement with higher token/reasoning overhead. |
+
+### Fixture Stability
+
+| Fixture | Chat | Responses | Notes |
+| --- | ---: | ---: | --- |
+| `early-patch-basic` | 3/3 | 3/3 | Stable on both variants. |
+| `side-topic-repetition` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-long-current-notes` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-heading-reuse` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-fallback-section` | 0/3 | 2/3 | Chat repeatedly put new-section content in an unsafe append field; Responses was better but not perfect. |
+| `notes-live-unsafe-or-repeated` | 3/3 | 3/3 | Stable after applied-note scoring calibration. |
+| `notes-live-side-topic-main-topic-balance` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-long-meeting-rolling-context` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-lecture-topic-shift` | 1/3 | 3/3 | Responses handled fallback/new-topic structure more reliably. |
+| `notes-live-repeated-correction` | 3/3 | 3/3 | Stable on both variants. |
+| `notes-live-tangent-with-action` | 3/3 | 2/3 | Responses included tangent snack/coffee content once. |
+
+### Repeated-Run Decision
+
+Do not switch production live routing in T-083/T-090.
+
+Forms live remains on Chat because the sparse Responses candidate matched Chat quality but used more tokens and did not show a reliability advantage.
+
+Notes live Responses is now strong enough to justify a separate Notes-live-only migration-prep ticket. That future ticket should handle production rollout shape, fallback strategy, safe monitoring, rollback criteria, and long/noisy fixture expansion before changing runtime routing.
+
+### Runtime Prep Applied After Evaluation
+
+T-112 adds the Notes live Responses strict-schema path as an off-by-default runtime candidate behind `FORMIFY_NOTES_LIVE_PROVIDER=responses`.
+
+Default production Notes live remains Chat. When the Responses candidate is enabled, Responses errors, incomplete output, empty output, or invalid patch JSON fall back once to the existing Chat path. Existing patch safety filters still apply after model output.
 
 ## Decision
 
 Keep production Chat live paths for now.
 
-Responses strict-schema candidates remain useful evaluation targets, especially for Notes live patching, but the current evidence is not strong enough to migrate production live routing:
+The calibrated run strengthens the case for continuing to evaluate Responses, especially for Notes live, but it does not complete a production migration ticket:
 
-- Forms live Responses quality regressed on both fixtures.
-- Notes live Responses matched quality on two fixtures, but the sample is too small.
-- Strict schema improves output shape guarantees, not semantic correctness.
-- Existing Notes patch safety filters remain required.
+- Forms live Responses matched Chat but used more tokens.
+- Notes live Responses outscored Chat across repeated runs, but still had higher average token/reasoning use and occasional semantic misses.
+- Strict schema improves output shape guarantees, not all semantic quality.
+- Existing backend safety filters remain required for Notes live patches.
 
 ## Production Change Status
 
-No production live routing changed.
+No default production live routing changed.
 
-No production prompts, model names, reasoning effort, schemas used by current production paths, provider defaults, WebSocket contracts, HTTP route contracts, runtime dependencies, or product behaviour changed.
+T-112 added an opt-in Notes live Responses runtime candidate behind `FORMIFY_NOTES_LIVE_PROVIDER=responses`. Default provider routing remains Chat, and WebSocket contracts, HTTP route contracts, runtime dependencies, and default product behaviour are unchanged.
 
 ## Follow-Ups
 
-- Add more Forms live fixtures before reconsidering Responses for Forms live extraction.
-- Add more Notes live fixtures covering longer current notes, heading reuse, fallback section creation, duplicate suppression, and rejected unsafe patches.
-- Re-run live-only evals multiple times before using latency or pass-rate differences for production decisions.
+- Use `FORMIFY_NOTES_LIVE_PROVIDER=responses` only as a controlled opt-in candidate until more production-like validation exists.
+- Add more long/noisy Notes live fixtures before making Responses the default.
+- Define monitoring and rollback criteria before any default Notes live Responses switch.
+- Keep Forms live on Chat unless Responses shows a clear reliability win that justifies higher token use.

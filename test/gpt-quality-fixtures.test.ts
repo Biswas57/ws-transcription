@@ -40,6 +40,10 @@ describe("GPT quality eval fixtures", () => {
         expect(formsLiveFixtures.map((fixture) => fixture.name)).toEqual([
             "forms-live-basic-short",
             "forms-live-correction-fragment",
+            "forms-live-sparse-unknowns",
+            "forms-live-correction-normalisation",
+            "forms-live-explicit-na",
+            "forms-live-noisy-fragment",
         ]);
         expect(notesTransformFixtures.map((fixture) => fixture.name)).toEqual([
             "summarise-rca-process",
@@ -50,8 +54,17 @@ describe("GPT quality eval fixtures", () => {
         expect(notesLiveFixtures.map((fixture) => fixture.name)).toEqual([
             "early-patch-basic",
             "side-topic-repetition",
+            "notes-live-long-current-notes",
+            "notes-live-heading-reuse",
+            "notes-live-fallback-section",
+            "notes-live-unsafe-or-repeated",
+            "notes-live-side-topic-main-topic-balance",
+            "notes-live-long-meeting-rolling-context",
+            "notes-live-lecture-topic-shift",
+            "notes-live-repeated-correction",
+            "notes-live-tangent-with-action",
         ]);
-        expect(allGptEvalFixtures).toHaveLength(14);
+        expect(allGptEvalFixtures).toHaveLength(27);
     });
 
     it("uses unique fixture names", () => {
@@ -148,6 +161,7 @@ describe("GPT quality eval fixtures", () => {
             "summarise-rca-process",
             "reorganise-rca-process",
             "early-patch-basic",
+            "notes-live-fallback-section",
         ]);
 
         for (const fixture of fixturesWithSamples) {

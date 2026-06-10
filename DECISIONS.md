@@ -155,3 +155,13 @@ audio batch
 - Formify keeps canonical notes and forms app-owned; provider-owned Responses state, Conversations, and `previous_response_id` are not used by default.
 - Runtime logs must not include raw transcripts, notes, prompts, generated markdown, form values, template names, field labels, section names, secrets, tokens, user IDs, emails, or raw session IDs.
 - This is privacy-first backend hygiene only. Medical, HIPAA, or regulated professional use would require separate legal, compliance, security, access-control, audit-log, retention, and incident-response work.
+
+### GPT Runtime Overrides
+
+- Forms final remains `gpt-5.4` with medium reasoning.
+- Notes final remains `gpt-5.4` with medium reasoning.
+- Summarise remains `gpt-5.4` with medium reasoning; compression issues should be handled through prompt/eval work rather than lowering reasoning by default.
+- Reorganise defaults to `gpt-5.4` with medium reasoning. `FORMIFY_REORGANISE_REASONING=low` may be used for controlled low-reasoning testing and can be rolled back immediately by removing the env var or setting it to `medium`.
+- Forms live remains on Chat Completions JSON mode.
+- Notes live defaults to Chat Completions JSON mode. `FORMIFY_NOTES_LIVE_PROVIDER=responses` enables the strict-schema Responses candidate, with fallback to Chat on Responses failure or invalid output.
+- Notes live Responses is an opt-in runtime candidate, not a default migration. Existing patch safety filters remain required.

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "fs";
 import {
+    formsLiveFixtures,
     notesLiveFixtures,
     notesTransformFixtures,
 } from "./fixtures/gpt-evals/index.js";
@@ -40,7 +41,7 @@ describe("OpenAI GPT eval runner", () => {
     it("selects live Chat baselines and Responses strict-schema candidates", () => {
         const cases = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined });
 
-        expect(cases).toHaveLength(28);
+        expect(cases).toHaveLength(54);
         expect(new Set(cases.map((evalCase) => evalCase.flow))).toEqual(
             new Set(supportedOpenAIEvalFlows)
         );
@@ -81,8 +82,8 @@ describe("OpenAI GPT eval runner", () => {
             OPENAI_EVAL_FLOWS: "not-a-flow",
         });
 
-        expect(liveCases).toHaveLength(8);
-        expect(liveAliasCases).toHaveLength(8);
+        expect(liveCases).toHaveLength(34);
+        expect(liveAliasCases).toHaveLength(34);
         expect(unknownCases).toHaveLength(0);
         expect(selectedOpenAIEvalFlows({ OPENAI_EVAL_FLOWS: "forms-live,notes-live" })).toEqual(
             new Set(["forms-live-extraction", "notes-live-patch"])
@@ -105,8 +106,14 @@ describe("OpenAI GPT eval runner", () => {
         const formsSchema = liveAttributesResponseSchema(["full_name", "consent"]);
 
         expect(formsSchema.schema.additionalProperties).toBe(false);
-        expect(formsSchema.schema.properties.parsedAttributes.additionalProperties).toBe(false);
-        expect(formsSchema.schema.properties.parsedAttributes.required).toEqual(["full_name", "consent"]);
+        expect(formsSchema.schema.required).toEqual(["updates"]);
+        expect(formsSchema.schema.properties.updates.type).toBe("array");
+        expect(formsSchema.schema.properties.updates.items.additionalProperties).toBe(false);
+        expect(formsSchema.schema.properties.updates.items.required).toEqual(["fieldKey", "value"]);
+        expect(formsSchema.schema.properties.updates.items.properties.fieldKey.enum).toEqual([
+            "full_name",
+            "consent",
+        ]);
         expect(NOTES_LIVE_PATCH_RESPONSE_SCHEMA.schema.additionalProperties).toBe(false);
         expect(NOTES_LIVE_PATCH_RESPONSE_SCHEMA.schema.required).toEqual([
             "updates",
@@ -149,18 +156,40 @@ describe("OpenAI GPT eval runner", () => {
 
         expect(evalCase).toBeDefined();
         const result = evaluateStaticOpenAIEvalOutput(evalCase!, {
-            parsedAttributes: {
-                full_name: "Jordan Lee",
-                consent: "yes",
-                appointment_fee: "$500",
-                appointment_date: "",
-            },
+            liveAttributeUpdates: [
+                { fieldKey: "appointment_fee", value: "$400" },
+                { fieldKey: "full_name", value: "Jordan Lee" },
+                { fieldKey: "appointment_date", value: "" },
+                { fieldKey: "consent", value: "yes" },
+                { fieldKey: "appointment_fee", value: "$500" },
+            ],
         });
 
         expect(result.passed).toBe(true);
         expect(result.parseSuccess).toBe(true);
         expect(result.forms?.expectedFieldMismatchCount).toBe(0);
         expect(result.forms?.unknownEmptyCorrectCount).toBe(1);
+    });
+
+    it("keeps unknown and unmentioned Forms live fields out of sparse scoring", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined }).find((item) =>
+            item.flow === "forms-live-extraction" &&
+            item.fixtureName === "forms-live-sparse-unknowns" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+
+        expect(evalCase).toBeDefined();
+        const result = evaluateStaticOpenAIEvalOutput(evalCase!, {
+            liveAttributeUpdates: [
+                { fieldKey: "client_name", value: "Morgan Patel" },
+                { fieldKey: "review_reason", value: "tenancy support review" },
+            ],
+        });
+
+        expect(result.passed).toBe(true);
+        expect(result.forms?.expectedFieldMismatchCount).toBe(0);
+        expect(result.forms?.unknownEmptyCorrectCount).toBe(4);
+        expect(result.forms?.inventedValueCount).toBe(0);
     });
 
     it("evaluates static Notes live patch outputs after safety filters", () => {
@@ -184,6 +213,85 @@ describe("OpenAI GPT eval runner", () => {
         expect(result.parseSuccess).toBe(true);
         expect(result.notesLive?.fallbackUsed).toBe(true);
         expect(result.notesLive?.appliedChanged).toBe(true);
+    });
+
+    it("evaluates structured Notes fallback sections through the patch applier", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-fallback-section" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+        const fixture = notesLiveFixtures.find((item) => item.name === "notes-live-fallback-section");
+
+        expect(evalCase).toBeDefined();
+        expect(fixture?.sampleGoodOutput).toBeDefined();
+        const result = evaluateStaticOpenAIEvalOutput(evalCase!, {
+            notesLivePatch: {
+                updates: [],
+                fallbackAppendMarkdown: fixture!.sampleGoodOutput!,
+            },
+        });
+
+        expect(result.passed).toBe(true);
+        expect(result.notesLive?.fallbackUsed).toBe(true);
+        expect(result.headingCount).toBeGreaterThan(1);
+    });
+
+    it("fails Notes live static outputs that repeat existing bullets or miss expected heading reuse", () => {
+        const repeatedCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-unsafe-or-repeated" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+        const headingCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-heading-reuse" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+
+        expect(repeatedCase).toBeDefined();
+        const repeatedResult = evaluateStaticOpenAIEvalOutput(repeatedCase!, {
+            notesLivePatch: {
+                updates: [{
+                    targetHeading: "Communications",
+                    appendMarkdown: "- Do not publish customer communications before legal review.\n- Mei is the approval owner.",
+                }],
+            },
+        });
+        expect(repeatedResult.passed).toBe(false);
+        expect(repeatedResult.notes.some((note) => note.startsWith("repeated-existing-lines:"))).toBe(true);
+
+        expect(headingCase).toBeDefined();
+        const headingResult = evaluateStaticOpenAIEvalOutput(headingCase!, {
+            notesLivePatch: {
+                updates: [],
+                fallbackAppendMarkdown: "- Mei to send the legal review request by Wednesday.",
+            },
+        });
+        expect(headingResult.passed).toBe(false);
+        expect(headingResult.notes).toContain("expected-heading-not-targeted");
+    });
+
+    it("allows Notes live outputs that mention rejected title wording as a warning", () => {
+        const evalCase = selectOpenAIEvalCases({ OPENAI_EVAL_FLOWS: undefined }).find((item) =>
+            item.flow === "notes-live-patch" &&
+            item.fixtureName === "notes-live-unsafe-or-repeated" &&
+            item.variant.name === "candidate-responses-mini-low"
+        );
+
+        expect(evalCase).toBeDefined();
+        const result = evaluateStaticOpenAIEvalOutput(evalCase!, {
+            notesLivePatch: {
+                updates: [{
+                    targetHeading: "Communications",
+                    appendMarkdown: "- Approval owner is Mei.\n- \"Title: Emergency Runbook\" should not be used as a document title.",
+                }],
+                fallbackAppendMarkdown: "",
+            },
+        });
+
+        expect(result.passed).toBe(true);
+        expect(result.forbiddenConceptsFound).toEqual([]);
     });
 
     it("evaluates static Summarise outputs with deterministic quality checks", () => {
@@ -238,6 +346,30 @@ describe("OpenAI GPT eval runner", () => {
         expect(report).toContain("UNABLE_TO_GET_ISSUER_CERT_LOCALLY");
         expect(report).toContain("forms-final | correction-overwrite | candidate-final-low | yes");
         expect(report).not.toContain("raw model output");
+    });
+
+    it("keeps expanded live fixture coverage in the eval matrix", () => {
+        expect(formsLiveFixtures.map((fixture) => fixture.name)).toEqual([
+            "forms-live-basic-short",
+            "forms-live-correction-fragment",
+            "forms-live-sparse-unknowns",
+            "forms-live-correction-normalisation",
+            "forms-live-explicit-na",
+            "forms-live-noisy-fragment",
+        ]);
+        expect(notesLiveFixtures.map((fixture) => fixture.name)).toEqual([
+            "early-patch-basic",
+            "side-topic-repetition",
+            "notes-live-long-current-notes",
+            "notes-live-heading-reuse",
+            "notes-live-fallback-section",
+            "notes-live-unsafe-or-repeated",
+            "notes-live-side-topic-main-topic-balance",
+            "notes-live-long-meeting-rolling-context",
+            "notes-live-lecture-topic-shift",
+            "notes-live-repeated-correction",
+            "notes-live-tangent-with-action",
+        ]);
     });
 });
 

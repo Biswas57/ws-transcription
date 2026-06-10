@@ -5,6 +5,7 @@ import {
     NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER,
     countTokens,
     notesTransformOutputBudget,
+    reorganiseReasoningEffort,
 } from "./model-config.js";
 import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
@@ -69,7 +70,8 @@ You are given:
 
 YOUR TASK:
 Transform current visible notes only.
-Make the notes shorter, cleaner, and easier to review while preserving the existing structure where it is already useful, and simplifying it where it is overly detailed or repetitive.
+Produce a condensed summary, not a cleaned-up rewrite and not a reorganised version.
+Make the notes shorter, cleaner, and easier to review while preserving the existing structure only where it helps reviewability.
 
 SOURCE-OF-TRUTH RULES:
 - Use only current_visible_notes.
@@ -80,16 +82,19 @@ SOURCE-OF-TRUTH RULES:
 SUMMARISE REQUIREMENTS:
 - Preserve existing structure where it improves reviewability.
 - Do not reorganise into a totally new structure unless the existing structure is clearly weak, duplicated, or overly granular.
+- Do not behave like Reorganise; the output should be a condensed review summary, not the same detail in a new order.
 - For medium or long notes, produce a visibly shorter review version unless the notes are already extremely compact.
 - Long notes should usually be meaningfully shorter; do not force an exact percentage.
-- For long notes, a useful summary may be around 60-75% of the original length, but accuracy and reviewability are more important than hitting a fixed ratio.
-- For medium or long notes, reduce both wording and structure: combine related sections, reduce low-value subheadings where safe, and avoid preserving a one-to-one outline of the source.
+- If the source is long or repetitive, aim roughly for 50-75% of the original length where useful, but accuracy and reviewability are more important than hitting a fixed ratio.
+- For medium or long notes, reduce both wording and structure: merge related sections, reduce low-value headings and subheadings where safe, and avoid preserving a one-to-one outline of the source.
 - The result should be clearly different from a reorganised version of the same notes: shorter wording, fewer repeated bullets, and fewer low-level subheadings where the source is long.
 - Dedupe repeated notes.
-- Remove repeated framing, duplicated explanation, transcript-like wording, and overly granular supporting detail.
+- Remove repeated examples, repeated explanation, repeated framing, transcript-like wording, and overly granular supporting detail.
 - Merge small or overlapping bullets where meaning is preserved.
 - Compress overexplained concepts.
-- Compress supporting detail while preserving key facts, dates, numbers, names, definitions, actions, caveats, risks, commands, IDs, technical terms, product names, and representative examples.
+- Do not preserve every bullet; preserve the important meaning.
+- Prefer shorter wording.
+- Compress supporting detail while preserving decisions, actions, owners, deadlines, risks, blockers, obligations, constraints, open questions, safety-critical facts, explicit user-provided constraints, key facts, dates, numbers, names, definitions, caveats, commands, IDs, technical terms, product names, and representative examples.
 - Clean phrasing.
 - Keep already clear and concise sections mostly unchanged.
 - For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.
@@ -439,7 +444,7 @@ export async function generateNotesReorganisation(
         const response = await runOpenAIResponsesJson({
             label: "notes-transform-reorganise",
             model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            reasoningEffort: reorganiseReasoningEffort(),
             instructions: NOTES_REORGANISE_SYS_TXT,
             input: JSON.stringify({
                 note_style: args.noteStyle,
