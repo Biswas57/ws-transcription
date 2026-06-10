@@ -163,7 +163,7 @@ export class NotesHandler implements TranscriptionHandler {
         // Log resolved config only; never log notes content.
         console.log(
             `[${this.sessionId}][notes] Session start — ` +
-            `style: "${this.st.noteStyle}", ` +
+            `noteStyleCategory: ${this.st.noteStyle}, ` +
             `sectionsCount: ${this.st.sections.length}, ` +
             `sectionsChars: ${this.st.sections.reduce((sum, section) => sum + section.length, 0)}, ` +
             `continuation: ${continuationRequested}, ` +
