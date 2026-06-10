@@ -43,6 +43,12 @@ available_transcript is used to verify, correct, expand, and improve current_not
 Do not assume available_transcript contains the whole session if it is truncated or partial.
 If current_notes contains useful content not visible in available_transcript, preserve it unless it is clearly contradicted, irrelevant, duplicated, or appears to be an artefact.
 Manual edits are not separately marked as immutable; treat them as part of current_notes with the same weight as other canonical note content.
+If available_transcript is sparse, partial, or mostly confirms the existing draft, keep the useful current_notes structure and details.
+If available_transcript corrects current_notes, apply the correction and do not keep the outdated value.
+If current_notes and available_transcript repeat the same idea, keep one clean final version rather than both copies.
+Preserve unresolved questions, TODOs, user-provided actions, owners, dates, constraints, warnings, decisions, and important context unless they are answered, invalidated, duplicated, irrelevant, unsafe, or clearly superseded.
+Do not preserve live-note artefacts such as partial fragments, repeated filler, unsafe headings, transcript stutters, or obvious hallucinations.
+The final output should be a clean final note, not a raw merge of current_notes and available_transcript.
 
 FINAL EDITING REQUIREMENTS:
 - Produce polished, useful, structured notes.

@@ -19,6 +19,7 @@ export type NotesFinalEvalFixture = EvalConceptChecks & {
     noteStyle: string;
     transcript: string;
     currentNotes: string;
+    allowConciseFinalOutput?: boolean;
 };
 
 export type FormsFinalEvalFixture = {

@@ -725,7 +725,8 @@ function evaluateParsedOutput(
 
         if (evalCase.flow === "notes-final") {
             const finalFixture = fixture as NotesFinalEvalFixture;
-            suspiciouslyShort = markdown.length < Math.min(120, finalFixture.currentNotes.length * 0.5);
+            suspiciouslyShort = !finalFixture.allowConciseFinalOutput &&
+                markdown.length < Math.min(120, finalFixture.currentNotes.length * 0.5);
         }
 
         if (suspiciouslyShort) notes.push("suspiciously-short");
