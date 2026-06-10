@@ -54,14 +54,14 @@ export function reorganiseReasoningEffort(
     env: NodeJS.ProcessEnv = process.env
 ): ReorganiseReasoningEffort {
     const value = env.FORMIFY_REORGANISE_REASONING?.trim().toLowerCase();
-    if (!value || value === "medium") return "medium";
-    if (value === "low") return "low";
+    if (!value || value === "low") return "low";
+    if (value === "medium") return "medium";
 
     console.warn(
-        `[model-config] Invalid ${FORMIFY_REORGANISE_REASONING}, using medium — ` +
+        `[model-config] Invalid ${FORMIFY_REORGANISE_REASONING}, using low — ` +
         `value: ${safeLogValue(value)}`
     );
-    return "medium";
+    return "low";
 }
 
 export function notesLiveProvider(
