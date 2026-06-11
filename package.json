@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsc",
     "start": "pnpm build && node dist/app.js",
-    "test-client": "tsx test/test.ts",
-    "test-client:single": "tsx test/test2.ts",
-    "test-client:live": "tsx test/live-client.ts",
+    "test-client": "tsx tools/manual/test-client.ts",
+    "test-client:single": "tsx tools/manual/test-client-single.ts",
+    "test-client:live": "tsx tools/manual/live-client.ts",
     "test-auth": "pnpm build && tsx test/auth.ts",
     "load-test": "pnpm build && node dist/load/run.js",
     "load-test:chaos": "pnpm build && node dist/load/run.js --chaos",

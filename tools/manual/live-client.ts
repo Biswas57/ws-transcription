@@ -1,9 +1,9 @@
-// test/live-client.ts
+// tools/manual/live-client.ts
 import WebSocket from "ws";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import dotenv from "dotenv";
-import { mintWSToken } from "../ws-token.js";
+import { mintWSToken } from "../../ws-token.js";
 
 dotenv.config();
 

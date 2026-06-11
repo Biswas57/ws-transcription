@@ -1,10 +1,10 @@
-// test/multi-session.ts
+// tools/manual/test-client.ts
 import { WebSocket } from "ws";
 import * as fs from "fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
-import { mintWSToken } from "../ws-token.js";
+import { mintWSToken } from "../../ws-token.js";
 
 dotenv.config();
 
@@ -33,7 +33,7 @@ async function runSession(ws: WebSocket, sessionId: number) {
     console.log(`→ session #${sessionId} start`);
 
     //  stream one WebM file chunk-by-chunk
-    const buf = await fs.readFile(path.join(__dirname, "sample.webm"));
+    const buf = await fs.readFile(path.join(__dirname, "../../test/fixtures/sample.webm"));
     const chunkSize = Math.ceil(buf.length / 29);
 
     for (let i = 0; i < buf.length; i += chunkSize) {

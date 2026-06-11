@@ -16,6 +16,7 @@
         "gpt/**/*.ts",
         "audio/**/*.ts",
         "load/**/*.ts",
+        "tools/**/*.ts",
         "test/**/*.ts"
     ]
 }

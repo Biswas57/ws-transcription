@@ -83,6 +83,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-126 Document stable GPT runtime architecture | Completed | P1, backend architecture. Documented the current GPT runtime architecture, app-owned state, strict schemas, live failure policy, safe logging, bounded live context, async jobs, and deferred work. |
 | T-127 High-confidence backend repo hygiene | Completed | P3, backend cleanup. Removed tracked OS metadata, tightened dependency classification for test/load-only packages, and removed stale load-test cache-hit reporting without changing runtime behaviour or contracts. |
 | T-128 Backend bloat reduction plan | Completed | P2/P3, backend cleanup planning. Audited remaining repo, dependency, parser, diagnostics, eval, and GPT module bloat; classified cleanup by risk; and added scoped follow-up tickets without changing runtime behaviour. |
+| T-129 Backend repo structure cleanup | Completed | P3, backend cleanup. Confirmed no stale npm lockfile was tracked, consolidated duplicate sample fixtures, and moved manual clients out of automated test paths without changing runtime behaviour or contracts. |
 
 ## Active
 
@@ -108,7 +109,6 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-107 Explore template recommendation from session content | Backlog | P3. Evaluate whether the backend can recommend templates or custom blocks based on session content without risking latency or privacy. Should be opt-in or non-blocking. |
 | T-108 Explore external integrations via tools/MCP | Backlog | P3. Research Notion, Google Docs, Calendar, CRM, or ticketing integrations through app-owned functions or MCP. Require explicit user consent, approval UX, and clear data-sharing boundaries. |
 | T-109 Reject/avoid computer-use backend workflows | Backlog | P4. Document why computer-use style automation is not appropriate for the backend recording pipeline unless a future product requirement strongly justifies it. |
-| T-129 Backend repo structure cleanup | Backlog | P3, backend cleanup. Consolidate duplicate sample audio or document why both fixtures are required, move or clearly label manual WebSocket clients, and update package scripts without runtime contract changes. |
 | T-130 Provider diagnostics hardening | Backlog | P2/P3, privacy/reliability. Tighten provider failure diagnostics so logs keep safe status/code/type/param/request-id/token metadata while avoiding raw provider text, prompts, notes, transcripts, or user content. |
 | T-131 Parser and fallback helper unification | Backlog | P2/P3, backend cleanup. Reduce duplicated strict JSON extraction/schema/fallback helpers across GPT flows while preserving Notes live no-op failure, final Notes/Forms fallbacks, and transform parse error semantics. |
 | T-132 Eval/docs archive cleanup | Backlog | P3, backend clarity. Mark or move superseded eval reports and historical candidate/rollback language so current runtime docs stay clear while preserving useful eval evidence. |

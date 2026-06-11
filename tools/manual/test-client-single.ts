@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
-import { mintWSToken } from "../ws-token.js";
+import { mintWSToken } from "../../ws-token.js";
 
 dotenv.config();
 
@@ -30,7 +30,7 @@ async function main() {
         }));
 
         // load a small webm
-        const buf = await fs.promises.readFile(path.join(__dirname, "sample.webm"));
+        const buf = await fs.promises.readFile(path.join(__dirname, "../../test/fixtures/sample.webm"));
         const chunkSize = Math.ceil(buf.length / 50);
 
         for (let i = 0; i < buf.length; i += chunkSize) {

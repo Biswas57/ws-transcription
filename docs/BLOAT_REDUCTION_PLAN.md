@@ -36,8 +36,8 @@ rg -n "^import .*from" gpt parse-gpt.ts
 
 Key findings:
 
-- `test/sample.webm` and `load/sample.webm` are the only tracked files over 100 KB, and they appear to be duplicate manual/load audio fixtures.
-- Manual WebSocket clients still live under `test/` and are referenced by package scripts.
+- T-129 consolidated duplicate sample audio into `test/fixtures/sample.webm`.
+- T-129 moved source-run manual WebSocket clients into `tools/manual/` and updated package scripts.
 - Historical eval reports still mention candidate providers, rollback flags, Chat-vs-Responses comparisons, and earlier reasoning/model experiments. These are useful evidence, but they should be easier to distinguish from current runtime architecture.
 - JSON extraction, strict-output validation, and fallback handling are repeated across several GPT feature modules. This is expected after hardening, but it is now a cleanup candidate.
 - Provider diagnostics are content-safe in intent, but the free-form provider message surface should be narrowed further.
@@ -48,8 +48,8 @@ Key findings:
 
 | Candidate | Evidence | Recommended action | Ticket |
 | --- | --- | --- | --- |
-| Duplicate sample audio | `test/sample.webm` and `load/sample.webm` are both about 596 KB. | Consolidate to a single shared fixture path or document why both are needed. Update scripts and manual clients carefully. | T-129 |
-| Manual clients under `test/` | `test/test.ts`, `test/test2.ts`, and `test/live-client.ts` are source-run/manual clients, not Vitest tests. | Move or label manual clients under a clearer manual tooling path, preserving package scripts. | T-129 |
+| Duplicate sample audio | Resolved by T-129. The canonical fixture is now `test/fixtures/sample.webm`. | Keep the single shared fixture unless a future load/manual scenario needs a distinct audio file. | Completed |
+| Manual clients under automated test paths | Resolved by T-129. Manual clients now live under `tools/manual/`. | Keep source-run smoke clients separate from Vitest tests. | Completed |
 | Local empty or untracked cleanup areas | `unused/` exists locally but is not tracked. | Do not add docs around it unless it becomes tracked; local deletion is optional and outside this ticket. | T-129 if tracked later |
 | Historical wording in current docs/task text | Search results show old candidate/rollback wording in completed tickets and eval reports. | Add superseded/current-runtime notes instead of deleting useful history. | T-132 |
 | Generated `dist/` visibility in local audits | `dist/` appears in local size searches but is ignored/generated. | Keep ignored. Do not track or clean as a source-ticket unless deployment packaging changes. | None |
@@ -86,31 +86,18 @@ Key findings:
 
 ## Recommended Ticket Order
 
-1. T-129 Backend repo structure cleanup
-2. T-130 Provider diagnostics hardening
-3. T-132 Eval/docs archive cleanup
-4. T-131 Parser and fallback helper unification
-5. T-133 GPT module boundary review
+1. T-130 Provider diagnostics hardening
+2. T-132 Eval/docs archive cleanup
+3. T-131 Parser and fallback helper unification
+4. T-133 GPT module boundary review
 
-This order removes low-risk repo clutter first, hardens privacy-facing diagnostics before deeper code cleanup, clarifies historical eval docs, then tackles shared parser helpers and broader module boundaries only after the repo is easier to navigate.
+T-129 has already removed the first low-risk repo-structure clutter. The remaining order hardens privacy-facing diagnostics before deeper code cleanup, clarifies historical eval docs, then tackles shared parser helpers and broader module boundaries only after the repo is easier to navigate.
 
 ## Follow-Up Ticket Scopes
 
 ### T-129 Backend repo structure cleanup
 
-Scope:
-
-- Consolidate duplicate sample audio or document why both files are required.
-- Move or clearly label manual WebSocket clients outside normal Vitest-style test naming.
-- Update package scripts and path references.
-- Preserve all runtime behaviour and contracts.
-
-Validation:
-
-- `git diff --check`
-- `pnpm build`
-- `pnpm exec vitest run`
-- Manual script checks only for changed scripts, without paid OpenAI calls.
+Status: completed after this plan. The repo now has one shared sample fixture and manual clients are separated from automated test files.
 
 ### T-130 Provider diagnostics hardening
 

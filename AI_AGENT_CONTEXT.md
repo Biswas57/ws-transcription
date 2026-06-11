@@ -36,7 +36,8 @@ The main Formify web app is separate from this repo. This server expects the web
 - `gpt/`: OpenAI GPT config, provider helpers, JSON helpers, transcript revision, Forms extraction/final parsing, Notes live/final generation, and Notes transform logic.
 - `ws-token.ts`: JWT mint/verify helpers for WebSocket session tokens.
 - `load/`: WebSocket load-test harness.
-- `test/`: local WebSocket test clients and focused backend tests.
+- `tools/manual/`: source-run WebSocket smoke clients.
+- `test/`: focused backend tests and shared fixtures.
 
 ## Commands
 

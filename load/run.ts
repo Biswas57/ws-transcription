@@ -101,8 +101,8 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
 }
 
 (async () => {
-  // Load audio file from source directory since it's not copied to dist  
-  audio = await fs.readFile(path.join(__dirname, "../../load/sample.webm"));
+  // Load shared audio fixture from source directory since it is not copied to dist.
+  audio = await fs.readFile(path.join(__dirname, "../../test/fixtures/sample.webm"));
 
   console.log(chalk.blue("🔥 Starting extensive WebSocket load test..."));
   console.log(chalk.gray(`Server: ${opts.url}`));
