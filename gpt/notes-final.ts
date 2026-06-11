@@ -1,6 +1,5 @@
 import {
-    GPT_FINAL_MODEL,
-    GPT_FINAL_REASONING_EFFORT,
+    GPT_FLOW_CONFIG,
     NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT,
     countTokens,
     notesFinalOutputBudget,
@@ -141,11 +140,12 @@ export async function finalizeNotes(
     const wasTruncated = fullTranscript.length > NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT;
     const inputTokens = countTokens(truncated) + countTokens(currentNotes);
     const maxOutputTokens = notesFinalOutputBudget(inputTokens);
+    const config = GPT_FLOW_CONFIG.notesFinal;
     recordUsageEvent("notes_final_start", {
         flow: "notes-final",
         provider: "responses",
-        model: GPT_FINAL_MODEL,
-        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        model: config.model,
+        reasoningEffort: config.reasoning,
         transcriptChars: fullTranscript.length,
         truncatedChars: truncated.length,
         currentNotesChars: currentNotes.length,
@@ -156,7 +156,7 @@ export async function finalizeNotes(
     });
     console.log(
         `[notes-final] Context — ` +
-        `model: ${GPT_FINAL_MODEL}, ` +
+        `model: ${config.model}, ` +
         `limit: ${NOTES_FINAL_TRANSCRIPT_CHAR_LIMIT}, ` +
         `transcriptBefore: ${fullTranscript.length}, ` +
         `transcriptAfter: ${truncated.length}, ` +
@@ -169,8 +169,8 @@ export async function finalizeNotes(
     try {
         const response = await runOpenAIResponsesJson({
             label: "notes-final",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             instructions: NOTES_FINAL_SYS_TXT,
             input: JSON.stringify({
                 note_style: noteStyle,
@@ -249,12 +249,12 @@ export async function finalizeNotes(
             console.warn("[notes-final] Missing notesMarkdown key, returning current");
             return currentNotes;
         }
-        console.log(`[notes-final] ${GPT_FINAL_MODEL} pass complete: ${finalized.length} chars`);
+        console.log(`[notes-final] ${config.model} pass complete: ${finalized.length} chars`);
         recordUsageEvent("notes_final_complete", {
             flow: "notes-final",
             provider: "responses",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             transcriptChars: fullTranscript.length,
             truncatedChars: truncated.length,
             currentNotesChars: currentNotes.length,

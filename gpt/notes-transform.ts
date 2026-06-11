@@ -1,11 +1,9 @@
 import {
-    GPT_FINAL_MODEL,
-    GPT_FINAL_REASONING_EFFORT,
+    GPT_FLOW_CONFIG,
     NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER,
     NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER,
     countTokens,
     notesTransformOutputBudget,
-    reorganiseReasoningEffort,
 } from "./model-config.js";
 import { extractJsonObjectText } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
@@ -338,11 +336,12 @@ export async function generateNotesSummary(
     const notesMarkdown = args.notesMarkdown.trim();
     const inputTokens = countTokens(notesMarkdown);
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_SUMMARY_OUTPUT_TOKEN_MULTIPLIER);
+    const config = GPT_FLOW_CONFIG.summarise;
     recordUsageEvent("notes_transform_start", {
         flow: "summarise",
         provider: "responses",
-        model: GPT_FINAL_MODEL,
-        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        model: config.model,
+        reasoningEffort: config.reasoning,
         inputChars: notesMarkdown.length,
         inputTokens,
         maxOutputTokens,
@@ -351,8 +350,8 @@ export async function generateNotesSummary(
     try {
         const response = await runOpenAIResponsesJson({
             label: "notes-transform-summary",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             instructions: NOTES_SUMMARISE_SYS_TXT,
             input: JSON.stringify({
                 note_style: args.noteStyle,
@@ -404,8 +403,8 @@ export async function generateNotesSummary(
         recordUsageEvent("notes_transform_complete", {
             flow: "summarise",
             provider: "responses",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             inputChars: notesMarkdown.length,
             outputChars: summaryMarkdown.length,
             inputTokens,
@@ -467,12 +466,12 @@ export async function generateNotesReorganisation(
     const targetSections = args.targetSections ?? [];
     const inputTokens = countTokens(notesMarkdown);
     const maxOutputTokens = notesTransformOutputBudget(inputTokens, NOTES_REORGANISE_OUTPUT_TOKEN_MULTIPLIER);
-    const reasoningEffort = reorganiseReasoningEffort();
+    const config = GPT_FLOW_CONFIG.reorganise;
     recordUsageEvent("notes_transform_start", {
         flow: "reorganise",
         provider: "responses",
-        model: GPT_FINAL_MODEL,
-        reasoningEffort,
+        model: config.model,
+        reasoningEffort: config.reasoning,
         inputChars: notesMarkdown.length,
         inputTokens,
         targetSectionCount: targetSections.length,
@@ -482,8 +481,8 @@ export async function generateNotesReorganisation(
     try {
         const response = await runOpenAIResponsesJson({
             label: "notes-transform-reorganise",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             instructions: NOTES_REORGANISE_SYS_TXT,
             input: JSON.stringify({
                 note_style: args.noteStyle,
@@ -550,8 +549,8 @@ export async function generateNotesReorganisation(
         recordUsageEvent("notes_transform_complete", {
             flow: "reorganise",
             provider: "responses",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             inputChars: notesMarkdown.length,
             outputChars: reorganisedMarkdown.length,
             inputTokens,

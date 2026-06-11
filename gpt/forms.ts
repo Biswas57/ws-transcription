@@ -1,10 +1,7 @@
 import { type FieldDef, FORMS_MIN_TRANSCRIPT_CHARS } from "../types.js";
 import {
     FORM_FINAL_TRANSCRIPT_CHAR_LIMIT,
-    GPT_FINAL_MODEL,
-    GPT_FINAL_REASONING_EFFORT,
-    GPT_LIVE_REASONING_EFFORT,
-    GPT_MINI_MODEL,
+    GPT_FLOW_CONFIG,
     GPT_REQUEST_TIMEOUT_MS,
     truncateTranscriptPreservingEdges,
 } from "./model-config.js";
@@ -194,10 +191,11 @@ export async function extractAttributesFromText(
     }
 
     const maxOutputTokens = Math.max(512, template.length * 60);
+    const config = GPT_FLOW_CONFIG.formsLive;
     recordUsageEvent("forms_live_extract_start", {
         flow: "forms-live-extraction",
         provider: "chat",
-        model: GPT_MINI_MODEL,
+        model: config.model,
         transcriptChars: correctedText.length,
         templateFields: template.length,
         maxOutputTokens,
@@ -206,7 +204,7 @@ export async function extractAttributesFromText(
     try {
         const startedAt = Date.now();
         const completion = await openai.chat.completions.create({
-            model: GPT_MINI_MODEL,
+            model: config.model,
             store: false,
             messages: [
                 { role: "system", content: EXTRACT_SYS_TXT },
@@ -221,7 +219,7 @@ export async function extractAttributesFromText(
             ],
             max_completion_tokens: maxOutputTokens,
             response_format: { type: "json_object" },
-            reasoning_effort: GPT_LIVE_REASONING_EFFORT,
+            reasoning_effort: config.reasoning,
         }, { timeout: GPT_REQUEST_TIMEOUT_MS });
 
         const content = completion.choices?.[0]?.message?.content;
@@ -235,7 +233,7 @@ export async function extractAttributesFromText(
         recordUsageEvent("forms_live_extract_complete", {
             flow: "forms-live-extraction",
             provider: "chat",
-            model: GPT_MINI_MODEL,
+            model: config.model,
             transcriptChars: correctedText.length,
             templateFields: template.length,
             attrsReturned: Object.keys(cleaned).length,
@@ -252,7 +250,7 @@ export async function extractAttributesFromText(
         recordUsageEvent("forms_live_extract_failed", {
             flow: "forms-live-extraction",
             provider: "chat",
-            model: GPT_MINI_MODEL,
+            model: config.model,
             transcriptChars: correctedText.length,
             templateFields: template.length,
             maxOutputTokens,
@@ -282,11 +280,12 @@ export async function parseFinalAttributes(
     }
 
     const maxOutputTokens = Math.max(1024, template.length * 80);
+    const config = GPT_FLOW_CONFIG.formsFinal;
     recordUsageEvent("forms_final_start", {
         flow: "forms-final",
         provider: "responses",
-        model: GPT_FINAL_MODEL,
-        reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+        model: config.model,
+        reasoningEffort: config.reasoning,
         transcriptChars: fullTranscript.length,
         truncatedChars: truncated.length,
         templateFields: template.length,
@@ -296,8 +295,8 @@ export async function parseFinalAttributes(
     try {
         const response = await runOpenAIResponsesJson({
             label: "forms-final",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             instructions: FINAL_SYS_TXT,
             input: JSON.stringify({
                 allowed_keys: allowed,
@@ -384,12 +383,12 @@ export async function parseFinalAttributes(
             }
         }
 
-        console.log(`[final] ${GPT_FINAL_MODEL} pass complete. Updated ${updatedCount} fields.`);
+        console.log(`[final] ${config.model} pass complete. Updated ${updatedCount} fields.`);
         recordUsageEvent("forms_final_complete", {
             flow: "forms-final",
             provider: "responses",
-            model: GPT_FINAL_MODEL,
-            reasoningEffort: GPT_FINAL_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             transcriptChars: fullTranscript.length,
             truncatedChars: truncated.length,
             templateFields: template.length,

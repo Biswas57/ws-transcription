@@ -34,13 +34,9 @@ import {
     reviseTranscription,
 } from "../parse-gpt.js";
 import {
-    getNotesLiveProviderMode,
-    reorganiseReasoningEffort,
+    GPT_FLOW_CONFIG,
 } from "../gpt/model-config.js";
 import { buildNotesLivePatchRequest } from "../gpt/notes-live.js";
-
-const ORIGINAL_REORGANISE_REASONING = process.env.FORMIFY_REORGANISE_REASONING;
-const ORIGINAL_NOTES_LIVE_PROVIDER = process.env.FORMIFY_NOTES_LIVE_PROVIDER;
 
 const LONG_NOTES = [
     "# Session Notes",
@@ -111,22 +107,6 @@ describe("parse-gpt stabilisation", () => {
     beforeEach(() => {
         openAiMock.chatCreate.mockReset();
         openAiMock.responsesCreate.mockReset();
-        delete process.env.FORMIFY_REORGANISE_REASONING;
-        delete process.env.FORMIFY_NOTES_LIVE_PROVIDER;
-    });
-
-    afterEach(() => {
-        if (ORIGINAL_REORGANISE_REASONING === undefined) {
-            delete process.env.FORMIFY_REORGANISE_REASONING;
-        } else {
-            process.env.FORMIFY_REORGANISE_REASONING = ORIGINAL_REORGANISE_REASONING;
-        }
-
-        if (ORIGINAL_NOTES_LIVE_PROVIDER === undefined) {
-            delete process.env.FORMIFY_NOTES_LIVE_PROVIDER;
-        } else {
-            process.env.FORMIFY_NOTES_LIVE_PROVIDER = ORIGINAL_NOTES_LIVE_PROVIDER;
-        }
     });
 
     it("runs incremental extraction for one-word Forms values", async () => {
@@ -387,10 +367,7 @@ describe("parse-gpt stabilisation", () => {
     });
 
     it("keeps current notes unchanged when notes incremental patch JSON is invalid", async () => {
-        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "chat";
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{ message: { content: "not valid json" } }],
-        });
+        openAiMock.responsesCreate.mockResolvedValueOnce(responsesJson("not valid json"));
 
         const current = "## Decisions\n\n- Existing decision.";
         await expect(generateNotesIncremental(
@@ -399,115 +376,56 @@ describe("parse-gpt stabilisation", () => {
             "meeting",
             ["Decisions"]
         )).resolves.toBe(current);
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
+        expect(openAiMock.create).not.toHaveBeenCalled();
     });
 
-    it("can force Notes live back to Chat with the rollback provider env", async () => {
-        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "chat";
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{
-                message: {
-                    content: JSON.stringify({
-                        updates: [{
-                            targetHeading: "Decisions",
-                            targetLevel: 2,
-                            appendMarkdown: "- Chat path still owns default live notes.",
-                        }],
-                    }),
-                },
-            }],
-        });
+    it("returns a no-op patch when Notes live Responses provider fails", async () => {
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
 
         const patch = await generateNotesIncrementalPatch(
-            "Chat path is still the rollback for live notes.",
+            "Responses failure should not mutate live notes.",
             "## Decisions\n\n- Existing decision.",
             "meeting",
             ["Decisions"]
         );
 
-        expect(patch.updates).toHaveLength(1);
-        expect(openAiMock.create).toHaveBeenCalledTimes(1);
-        expect(openAiMock.responsesCreate).not.toHaveBeenCalled();
-        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
-        expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
-        expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
+        expect(patch).toEqual({ updates: [] });
+        expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
+        expect(openAiMock.create).not.toHaveBeenCalled();
     });
 
-    it("passes bounded current-notes context through the Chat live rollback path", async () => {
-        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "chat";
-        openAiMock.create.mockResolvedValueOnce({
-            choices: [{
-                message: {
-                    content: JSON.stringify({
-                        updates: [{
-                            targetHeading: "Actions",
-                            targetLevel: 2,
-                            appendMarkdown: "- Chat path used bounded context.",
-                        }],
-                    }),
-                },
-            }],
-        });
+    it("passes bounded current-notes context through the Responses-only live path on failure", async () => {
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
 
         await expect(generateNotesIncrementalPatch(
-            "Chat path used bounded context.",
+            "Responses path used bounded context before failing.",
             LONG_NOTES,
             "meeting",
             ["Actions"]
         )).resolves.toMatchObject({
-            updates: [{
-                targetHeading: "Actions",
-                targetLevel: 2,
-                appendMarkdown: "- Chat path used bounded context.",
-            }],
+            updates: [],
         });
 
-        const request = openAiMock.create.mock.calls[0][0];
-        const input = JSON.parse(request.messages[1].content) as { current_notes: string };
+        const request = openAiMock.responsesCreate.mock.calls[0][0];
+        const input = JSON.parse(request.input) as { current_notes: string };
         expect(input.current_notes).toContain("Compact current notes context for live patching");
         expect(input.current_notes.length).toBeLessThan(LONG_NOTES.length);
         expect(input.current_notes).not.toContain("Detailed note 0 captures");
+        expect(openAiMock.create).not.toHaveBeenCalled();
     });
 
-    it("resolves Notes live provider mode from env with Responses as the default", () => {
-        const configWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-        try {
-            expect(getNotesLiveProviderMode({} as NodeJS.ProcessEnv)).toBe("responses");
-            expect(getNotesLiveProviderMode({
-                FORMIFY_NOTES_LIVE_PROVIDER: "chat",
-            } as NodeJS.ProcessEnv)).toBe("chat");
-            expect(getNotesLiveProviderMode({
-                FORMIFY_NOTES_LIVE_PROVIDER: "responses",
-            } as NodeJS.ProcessEnv)).toBe("responses");
-            expect(getNotesLiveProviderMode({
-                FORMIFY_NOTES_LIVE_PROVIDER: "fast",
-            } as NodeJS.ProcessEnv)).toBe("responses");
-            expect(configWarn.mock.calls[0]?.[0]).toContain("Invalid FORMIFY_NOTES_LIVE_PROVIDER");
-            expect(configWarn.mock.calls[0]?.[0]).toContain("using responses");
-        } finally {
-            configWarn.mockRestore();
-        }
-    });
-
-    it("resolves Reorganise reasoning from env with low as the default", () => {
-        const configWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-        try {
-            expect(reorganiseReasoningEffort({} as NodeJS.ProcessEnv)).toBe("low");
-            expect(reorganiseReasoningEffort({
-                FORMIFY_REORGANISE_REASONING: "low",
-            } as NodeJS.ProcessEnv)).toBe("low");
-            expect(reorganiseReasoningEffort({
-                FORMIFY_REORGANISE_REASONING: "medium",
-            } as NodeJS.ProcessEnv)).toBe("medium");
-            expect(reorganiseReasoningEffort({
-                FORMIFY_REORGANISE_REASONING: "fast",
-            } as NodeJS.ProcessEnv)).toBe("low");
-            expect(configWarn.mock.calls[0]?.[0]).toContain("Invalid FORMIFY_REORGANISE_REASONING");
-            expect(configWarn.mock.calls[0]?.[0]).toContain("using low");
-        } finally {
-            configWarn.mockRestore();
-        }
+    it("exposes stable production GPT flow defaults", () => {
+        expect(GPT_FLOW_CONFIG.notesLive).toEqual({
+            api: "responses",
+            model: "gpt-5.4-mini",
+            reasoning: "low",
+        });
+        expect(GPT_FLOW_CONFIG.reorganise).toEqual({
+            api: "responses",
+            model: "gpt-5.4",
+            reasoning: "low",
+        });
     });
 
     it("uses the Notes live Responses strict-schema provider by default", async () => {
@@ -625,7 +543,7 @@ describe("parse-gpt stabilisation", () => {
         expect(result).not.toContain("\"updates\"");
     });
 
-    it("falls back to Chat once with safe canary diagnostics when Notes live Responses fails", async () => {
+    it("returns safe no-op patches with safe diagnostics when Notes live Responses fails", async () => {
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
         const secretTranscript = "UNIQUE_TRANSCRIPT_SHOULD_NOT_APPEAR_IN_LOGS";
@@ -641,7 +559,7 @@ describe("parse-gpt stabilisation", () => {
             },
             {
                 responseOrError: responsesJson(JSON.stringify({ updates: [] })),
-                category: "schema_failed",
+                category: "schema_invalid",
             },
             {
                 responseOrError: responsesJson(JSON.stringify({
@@ -654,7 +572,7 @@ describe("parse-gpt stabilisation", () => {
                     fallbackAppendMarkdown: "",
                     extra: "unexpected",
                 })),
-                category: "schema_failed",
+                category: "schema_invalid",
             },
             {
                 responseOrError: responsesJson(""),
@@ -681,37 +599,19 @@ describe("parse-gpt stabilisation", () => {
 
         try {
             for (const { responseOrError } of cases) {
-                process.env.FORMIFY_NOTES_LIVE_PROVIDER = "responses";
                 if (responseOrError instanceof Error) {
                     openAiMock.responsesCreate.mockRejectedValueOnce(responseOrError);
                 } else {
                     openAiMock.responsesCreate.mockResolvedValueOnce(responseOrError);
                 }
-                openAiMock.create.mockResolvedValueOnce({
-                    choices: [{
-                        message: {
-                            content: JSON.stringify({
-                                updates: [{
-                                    targetHeading: "Decisions",
-                                    targetLevel: 2,
-                                    appendMarkdown: "- Chat fallback preserved the live update.",
-                                }],
-                            }),
-                        },
-                    }],
-                });
 
                 await expect(generateNotesIncrementalPatch(
-                    `${secretTranscript} Chat fallback preserved the live update.`,
+                    `${secretTranscript} Responses failure should preserve current notes.`,
                     secretNotes,
                     "meeting",
                     ["Decisions"]
                 )).resolves.toMatchObject({
-                    updates: [{
-                        targetHeading: "Decisions",
-                        targetLevel: 2,
-                        appendMarkdown: "- Chat fallback preserved the live update.",
-                    }],
+                    updates: [],
                 });
             }
 
@@ -726,40 +626,35 @@ describe("parse-gpt stabilisation", () => {
             }
             expect(allOutput).toContain("Provider selected");
             expect(allOutput).toContain("provider: responses");
-            expect(allOutput).toContain("fallbackUsed: true");
+            expect(allOutput).toContain("notes_live_patch_failed");
+            expect(allOutput).not.toContain("fallbackUsed: true");
             expect(allOutput).not.toContain(secretTranscript);
             expect(allOutput).not.toContain(secretNotes);
             expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(cases.length);
-            expect(openAiMock.create).toHaveBeenCalledTimes(cases.length);
+            expect(openAiMock.create).not.toHaveBeenCalled();
         } finally {
             warnSpy.mockRestore();
             logSpy.mockRestore();
         }
     });
 
-    it("returns a safe no-op patch if the Chat fallback output is invalid", async () => {
-        process.env.FORMIFY_NOTES_LIVE_PROVIDER = "responses";
+    it("preserves current markdown if the Responses-only live patch fails", async () => {
         const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
         try {
             openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
-            openAiMock.create.mockResolvedValueOnce({
-                choices: [{ message: { content: "not json" } }],
-            });
+            const current = "## Decisions\n\n- Existing decision.";
 
-            await expect(generateNotesIncrementalPatch(
-                "Chat fallback output is malformed.",
-                "## Decisions\n\n- Existing decision.",
+            await expect(generateNotesIncremental(
+                "Responses provider failed before producing a live patch.",
+                current,
                 "meeting",
                 ["Decisions"]
-            )).resolves.toMatchObject({
-                updates: [],
-                parseFailed: true,
-            });
+            )).resolves.toBe(current);
 
             expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
-            expect(openAiMock.create).toHaveBeenCalledTimes(1);
-            expect(warnSpy.mock.calls.flat().join("\n")).toContain("JSON parse failed");
+            expect(openAiMock.create).not.toHaveBeenCalled();
+            expect(warnSpy.mock.calls.flat().join("\n")).toContain("Patch failed, preserving current notes");
         } finally {
             warnSpy.mockRestore();
         }
@@ -1055,39 +950,6 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.responsesCreate.mock.calls[1][0].reasoning).toEqual({ effort: "medium" });
         expect(openAiMock.responsesCreate.mock.calls[2][0].reasoning).toEqual({ effort: "medium" });
         expect(openAiMock.responsesCreate.mock.calls[3][0].reasoning).toEqual({ effort: "medium" });
-    });
-
-    it("can force Reorganise back to medium reasoning with the rollback env", async () => {
-        process.env.FORMIFY_REORGANISE_REASONING = "medium";
-        const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
-        openAiMock.responsesCreate.mockResolvedValueOnce(
-            responsesJson(JSON.stringify({ reorganisedMarkdown: reorganised }))
-        );
-
-        await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
-            reorganisedMarkdown: reorganised,
-        });
-        expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "medium" });
-    });
-
-    it("falls back to low for invalid Reorganise reasoning config", async () => {
-        process.env.FORMIFY_REORGANISE_REASONING = "fast";
-        const configWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-        const reorganised = `${LONG_NOTES}\n\n## Actions\n\n- Follow up.`;
-        openAiMock.responsesCreate.mockResolvedValueOnce(
-            responsesJson(JSON.stringify({ reorganisedMarkdown: reorganised }))
-        );
-
-        try {
-            await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).resolves.toEqual({
-                reorganisedMarkdown: reorganised,
-            });
-            expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "low" });
-            expect(configWarn.mock.calls[0]?.[0]).toContain("Invalid FORMIFY_REORGANISE_REASONING");
-            expect(configWarn.mock.calls[0]?.[0]).toContain("using low");
-        } finally {
-            configWarn.mockRestore();
-        }
     });
 
     it("rejects malformed, missing, and suspiciously short reorganise output", async () => {

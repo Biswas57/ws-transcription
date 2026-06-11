@@ -1,21 +1,47 @@
 import { get_encoding } from "@dqbd/tiktoken";
 import dotenv from "dotenv";
-import { safeLogValue } from "../safe-log.js";
 
 dotenv.config();
 
-export const GPT_MINI_MODEL = "gpt-5.4-mini";
-export const GPT_FINAL_MODEL = "gpt-5.4";
-export const GPT_REVISION_REASONING_EFFORT = "none" as const;
-export const GPT_LIVE_REASONING_EFFORT = "low" as const;
-export const GPT_FINAL_REASONING_EFFORT = "medium" as const;
 export const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
 
-export type ReorganiseReasoningEffort = "low" | "medium";
-export type NotesLiveProvider = "chat" | "responses";
-
-const FORMIFY_REORGANISE_REASONING = "FORMIFY_REORGANISE_REASONING";
-const FORMIFY_NOTES_LIVE_PROVIDER = "FORMIFY_NOTES_LIVE_PROVIDER";
+export const GPT_FLOW_CONFIG = {
+    revision: {
+        api: "responses",
+        model: "gpt-5.4-mini",
+        reasoning: "none",
+    },
+    formsLive: {
+        api: "chat",
+        model: "gpt-5.4-mini",
+        reasoning: "low",
+    },
+    notesLive: {
+        api: "responses",
+        model: "gpt-5.4-mini",
+        reasoning: "low",
+    },
+    formsFinal: {
+        api: "responses",
+        model: "gpt-5.4",
+        reasoning: "medium",
+    },
+    notesFinal: {
+        api: "responses",
+        model: "gpt-5.4",
+        reasoning: "medium",
+    },
+    summarise: {
+        api: "responses",
+        model: "gpt-5.4",
+        reasoning: "medium",
+    },
+    reorganise: {
+        api: "responses",
+        model: "gpt-5.4",
+        reasoning: "low",
+    },
+} as const;
 
 export const DEFAULT_REVISION_MIN_CHARS = 15;
 export const NOTES_REVISION_MIN_CHARS = 40;
@@ -49,36 +75,6 @@ const tokenCounter = get_encoding("o200k_base");
 export function countTokens(text: string): number {
     return tokenCounter.encode(text).length;
 }
-
-export function reorganiseReasoningEffort(
-    env: NodeJS.ProcessEnv = process.env
-): ReorganiseReasoningEffort {
-    const value = env.FORMIFY_REORGANISE_REASONING?.trim().toLowerCase();
-    if (!value || value === "low") return "low";
-    if (value === "medium") return "medium";
-
-    console.warn(
-        `[model-config] Invalid ${FORMIFY_REORGANISE_REASONING}, using low — ` +
-        `value: ${safeLogValue(value)}`
-    );
-    return "low";
-}
-
-export function getNotesLiveProviderMode(
-    env: NodeJS.ProcessEnv = process.env
-): NotesLiveProvider {
-    const value = env.FORMIFY_NOTES_LIVE_PROVIDER?.trim().toLowerCase();
-    if (!value || value === "responses") return "responses";
-    if (value === "chat") return "chat";
-
-    console.warn(
-        `[model-config] Invalid ${FORMIFY_NOTES_LIVE_PROVIDER}, using responses — ` +
-        `value: ${safeLogValue(value)}`
-    );
-    return "responses";
-}
-
-export const notesLiveProvider = getNotesLiveProviderMode;
 
 // Preserves the beginning and end for final passes, but may drop middle content.
 // With the T-005 Phase 1 window this should only trigger for unusually dense

@@ -1,21 +1,18 @@
 import { applyNotesLivePatch, type NotesLivePatch } from "../notes-live-patch.js";
 import {
-    GPT_LIVE_REASONING_EFFORT,
-    GPT_MINI_MODEL,
-    GPT_REQUEST_TIMEOUT_MS,
+    GPT_FLOW_CONFIG,
     countTokens,
-    getNotesLiveProviderMode,
 } from "./model-config.js";
 import { buildNotesLiveCurrentContext } from "./notes-live-context.js";
-import { openai, runOpenAIResponsesJson } from "./provider.js";
-import { recordUsageEvent, safeErrorInfo, safeUsageMetadata } from "../safe-log.js";
+import { runOpenAIResponsesJson } from "./provider.js";
+import { recordUsageEvent, safeErrorInfo } from "../safe-log.js";
 
-type NotesLiveFallbackCategory =
+type NotesLiveFailureCategory =
     | "provider_error"
     | "incomplete_response"
     | "empty_output"
     | "parse_failed"
-    | "schema_failed";
+    | "schema_invalid";
 
 export const NOTES_INCREMENTAL_SYS_TXT = `\
 You are a live note-taking scribe in an Australian context.
@@ -191,7 +188,7 @@ type NotesLivePatchRequest = {
 };
 
 type NotesLivePatchFailure = {
-    category: NotesLiveFallbackCategory;
+    category: NotesLiveFailureCategory;
     outputChars?: number;
     durationMs?: number;
     incompleteReason?: string | null;
@@ -229,14 +226,12 @@ export function buildNotesLivePatchRequest(
 function logNotesLivePatchReceived(
     patch: NotesLivePatch,
     request: NotesLivePatchRequest,
-    provider: "chat" | "responses",
-    fallbackUsed: boolean,
+    provider: "responses",
     extra: { outputChars?: number; durationMs?: number; totalTokens?: number; reasoningTokens?: number } = {}
 ): void {
     console.log(
         `[notes-incremental-patch] Patch received — ` +
         `provider: ${provider}, ` +
-        `fallbackUsed: ${fallbackUsed}, ` +
         `updates: ${patch.updates.length}, ` +
         `fallbackChars: ${patch.fallbackAppendMarkdown?.length ?? 0}, ` +
         `transcriptChars: ${request.transcriptChars}, ` +
@@ -248,7 +243,6 @@ function logNotesLivePatchReceived(
     recordUsageEvent("notes_live_patch_complete", {
         flow: "notes-live-patch",
         provider,
-        fallbackUsed,
         updates: patch.updates.length,
         fallbackChars: patch.fallbackAppendMarkdown?.length ?? 0,
         transcriptChars: request.transcriptChars,
@@ -268,7 +262,7 @@ function logNotesLivePatchReceived(
 }
 
 function logNotesLiveProviderSelected(
-    provider: "chat" | "responses",
+    provider: "responses",
     request: NotesLivePatchRequest
 ): void {
     console.log(
@@ -305,13 +299,13 @@ function logNotesLiveProviderSelected(
     }
 }
 
-function logNotesLiveFallback(
+function logNotesLivePatchFailed(
     failure: NotesLivePatchFailure,
     request: NotesLivePatchRequest,
     errorInfo?: string
 ): void {
     const parts = [
-        `[notes-incremental-patch] Falling back to chat`,
+        `[notes-incremental-patch] Patch failed, preserving current notes`,
         `category: ${failure.category}`,
         `transcriptChars: ${request.transcriptChars}`,
         `currentNotesChars: ${request.currentNotesChars}`,
@@ -323,8 +317,9 @@ function logNotesLiveFallback(
     if (errorInfo) parts.push(`error: ${errorInfo}`);
 
     console.warn(parts.join(" — "));
-    recordUsageEvent("notes_live_patch_fallback", {
+    recordUsageEvent("notes_live_patch_failed", {
         flow: "notes-live-patch",
+        provider: "responses",
         category: failure.category,
         transcriptChars: request.transcriptChars,
         currentNotesChars: request.currentNotesChars,
@@ -357,81 +352,28 @@ export async function generateNotesIncrementalPatch(
         noteStyle,
         sections
     );
-    const provider = getNotesLiveProviderMode();
+    const provider = GPT_FLOW_CONFIG.notesLive.api;
     logNotesLiveProviderSelected(provider, request);
 
-    if (provider === "responses") {
-        try {
-            const result = await generateNotesIncrementalPatchResponses(request);
-            if (!result.patch.parseFailed) return result.patch;
-            logNotesLiveFallback(result.failure ?? { category: "parse_failed" }, request);
-        } catch (err) {
-            logNotesLiveFallback({ category: "provider_error" }, request, safeErrorInfo(err));
-        }
-
-        return generateNotesIncrementalPatchChat(request, true);
+    try {
+        const result = await generateNotesIncrementalPatchResponses(request);
+        if (!result.patch.parseFailed) return result.patch;
+        logNotesLivePatchFailed(result.failure ?? { category: "parse_failed" }, request);
+    } catch (err) {
+        logNotesLivePatchFailed({ category: "provider_error" }, request, safeErrorInfo(err));
     }
 
-    return generateNotesIncrementalPatchChat(request, false);
-}
-
-async function generateNotesIncrementalPatchChat(
-    request: NotesLivePatchRequest,
-    fallbackUsed: boolean
-): Promise<NotesLivePatch> {
-    const startedAt = Date.now();
-    const completion = await openai.chat.completions.create({
-        model: GPT_MINI_MODEL,
-        store: false,
-        messages: [
-            { role: "system", content: NOTES_INCREMENTAL_SYS_TXT },
-            { role: "user", content: request.input },
-        ],
-        max_completion_tokens: request.maxOutputTokens,
-        response_format: { type: "json_object" },
-        reasoning_effort: GPT_LIVE_REASONING_EFFORT,
-    }, { timeout: GPT_REQUEST_TIMEOUT_MS });
-
-    const content = completion.choices?.[0]?.message?.content;
-    if (!content) {
-        console.warn("[notes-incremental-patch] Empty response, returning empty patch");
-        recordUsageEvent("notes_live_patch_complete", {
-            flow: "notes-live-patch",
-            provider: "chat",
-            fallbackUsed,
-            parseFailed: false,
-            transcriptChars: request.transcriptChars,
-            currentNotesChars: request.currentNotesChars,
-            currentNotesContextChars: request.currentNotesContextChars,
-            contextCompacted: request.contextCompacted,
-            contextSavedChars: request.contextSavedChars,
-            headingCount: request.headingCount,
-            estimatedInputTokens: request.inputTokens,
-            maxOutputTokens: request.maxOutputTokens,
-            outputChars: 0,
-            durationMs: Date.now() - startedAt,
-        });
-        return { updates: [] };
-    }
-
-    const patch = parseNotesLivePatchContent(content);
-    const usage = safeUsageMetadata(completion.usage);
-    logNotesLivePatchReceived(patch, request, "chat", fallbackUsed, {
-        outputChars: content.length,
-        durationMs: Date.now() - startedAt,
-        totalTokens: usage.totalTokens,
-        reasoningTokens: usage.reasoningTokens,
-    });
-    return patch;
+    return { updates: [] };
 }
 
 async function generateNotesIncrementalPatchResponses(
     request: NotesLivePatchRequest
 ): Promise<{ patch: NotesLivePatch; failure?: NotesLivePatchFailure }> {
+    const config = GPT_FLOW_CONFIG.notesLive;
     const response = await runOpenAIResponsesJson({
         label: "notes-incremental-patch",
-        model: GPT_MINI_MODEL,
-        reasoningEffort: GPT_LIVE_REASONING_EFFORT,
+        model: config.model,
+        reasoningEffort: config.reasoning,
         instructions: NOTES_INCREMENTAL_SYS_TXT,
         input: request.input,
         maxOutputTokens: request.maxOutputTokens,
@@ -487,14 +429,14 @@ async function generateNotesIncrementalPatchResponses(
         return {
             patch: { updates: [], parseFailed: true },
             failure: {
-                category: "schema_failed",
+                category: "schema_invalid",
                 outputChars: response.outputText.length,
                 durationMs: response.durationMs,
             },
         };
     }
 
-    logNotesLivePatchReceived(patch, request, "responses", false, {
+    logNotesLivePatchReceived(patch, request, "responses", {
         outputChars: response.outputText.length,
         durationMs: response.durationMs,
         totalTokens: response.usage.totalTokens,

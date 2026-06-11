@@ -1,8 +1,7 @@
 import {
     DEFAULT_REVISION_MIN_CHARS,
     FORMS_REVISION_MIN_CHARS,
-    GPT_MINI_MODEL,
-    GPT_REVISION_REASONING_EFFORT,
+    GPT_FLOW_CONFIG,
     NOTES_REVISION_MIN_CHARS,
     NOTES_REVISION_MIN_WORDS,
     countTokens,
@@ -109,10 +108,11 @@ export async function reviseTranscription(rawText: string, options: RevisionOpti
     );
 
     try {
+        const config = GPT_FLOW_CONFIG.revision;
         const response = await runOpenAIResponsesJson({
             label: "revise",
-            model: GPT_MINI_MODEL,
-            reasoningEffort: GPT_REVISION_REASONING_EFFORT,
+            model: config.model,
+            reasoningEffort: config.reasoning,
             instructions: REVISE_SYS_TXT,
             input: rawText,
             maxOutputTokens,
