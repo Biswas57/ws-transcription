@@ -74,9 +74,13 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-112 Add opt-in Notes live Responses provider | Completed | P2, backend eval-to-runtime prep. Added the Notes live Responses strict-schema runtime candidate with safe fallback before the later T-115 default switch. |
 | T-113 Harden Notes live Responses canary readiness | Completed | P2, backend reliability. Added safe provider/fallback diagnostics, fallback tests, and rollback documentation for the Notes live Responses provider before the later T-115 default switch. |
 | T-114 Add process-heavy Summarise compression fixture | Completed | P1, backend quality. Added a dense RCA/process-style Summarise fixture and narrowly refined process-note compression guidance without changing model/reasoning defaults. |
-| T-115 Make Notes live Responses default with Chat rollback | Completed | P1, backend live quality. Switched Notes live default provider to the Responses strict-schema path based on repeated evals, while preserving Chat fallback and env rollback. Forms live remains Chat. |
-| T-116 Make Reorganise low reasoning default with medium rollback | Completed | P2, backend cost/latency. Changed Reorganise default reasoning to low with `FORMIFY_REORGANISE_REASONING=medium` rollback. Final notes/forms and Summarise remain medium. |
+| T-115 Make Notes live Responses default | Completed | P1, backend live quality. Switched Notes live default provider to the Responses strict-schema path based on repeated evals. Forms live remains Chat. |
+| T-116 Make Reorganise low reasoning default | Completed | P2, backend cost/latency. Changed Reorganise default reasoning to low. Final notes/forms and Summarise remain medium. |
 | T-117 Refine Summarise process/RCA compression guidance | Completed | P1, backend quality. Added targeted dense process/RCA compression guidance while preserving priority facts and keeping Summarise on medium reasoning. |
+| T-123 Stabilise runtime defaults and remove experiment flags | Completed | P1, backend architecture. Removed experiment-era GPT provider/reasoning env flags from production runtime while preserving deployment/auth/runtime env vars. Notes live uses Responses only; Forms live remains Chat; Reorganise uses low reasoning. |
+| T-124 Consolidate GPT model/provider configuration | Completed | P1, backend architecture. Centralised GPT flow provider/model/reasoning defaults in `GPT_FLOW_CONFIG` so runtime behaviour is explicit and testable. |
+| T-125 Separate eval-only scaffolding from production paths | Completed | P2, backend cleanup. Kept eval fixtures/runners test-only while production runtime files describe stable behaviour rather than candidate providers or rollback flags. |
+| T-126 Document stable GPT runtime architecture | Completed | P1, backend architecture. Documented the current GPT runtime architecture, app-owned state, strict schemas, live failure policy, safe logging, bounded live context, async jobs, and deferred work. |
 
 ## Active
 
