@@ -9,7 +9,7 @@ Low reasoning was faster and usually used fewer tokens, but the T-085e decision 
 - Forms final: `gpt-5.4`, medium reasoning
 - Notes final: `gpt-5.4`, medium reasoning
 - Summarise: `gpt-5.4`, medium reasoning
-- Reorganise: `gpt-5.4`, medium reasoning at the decision gate; T-116 later changed Reorganise to low with `FORMIFY_REORGANISE_REASONING=medium` rollback.
+- Reorganise: `gpt-5.4`, medium reasoning at the decision gate; T-116 later changed Reorganise to low, and T-123 removed the experiment-era reasoning override.
 
 No production model names, reasoning settings, prompts, schemas, provider routing, WebSocket contracts, or HTTP contracts were changed by this decision pass.
 
@@ -205,7 +205,7 @@ T-085e originally kept medium reasoning.
 
 Low passed the single Reorganise fixture and was faster, but one fixture is not enough evidence to change production defaults. Add more preservation fixtures before revisiting this.
 
-T-111 applied a controlled override instead of a default change. T-116 later made Reorganise low reasoning the default because the transform is user-reviewed and lower-risk than final notes. `FORMIFY_REORGANISE_REASONING=medium` is the immediate rollback path.
+T-111 applied a controlled override instead of a default change. T-116 later made Reorganise low reasoning the default because the transform is user-reviewed and lower-risk than final notes. T-123 removed the experiment-era runtime override; future reasoning changes should be explicit code changes backed by evals.
 
 ## Recommendation Before T-083
 
