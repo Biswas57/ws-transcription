@@ -5,13 +5,12 @@ import {
     countTokens,
     notesTransformOutputBudget,
 } from "./model-config.js";
-import { extractJsonObjectText } from "./json-parsing.js";
+import { parseJsonObjectText, readExactStringKey } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
 import {
     formatSafeJsonKeys,
     recordUsageEvent,
     safeErrorInfo,
-    safeJsonKeys,
     safeLogValue,
 } from "../safe-log.js";
 
@@ -221,12 +220,10 @@ export function parseNotesTransformMarkdown(
     content: string,
     key: "summaryMarkdown" | "reorganisedMarkdown"
 ): string {
-    const cleanedContent = extractJsonObjectText(content);
     const outputChars = content.length;
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(cleanedContent);
-    } catch {
+    const parsed = parseJsonObjectText(content);
+
+    if (!parsed.ok && parsed.stage === "invalid-json") {
         throw new NotesTransformError(
             "transform-output-invalid-json",
             "Transform returned invalid JSON.",
@@ -237,7 +234,7 @@ export function parseNotesTransformMarkdown(
         );
     }
 
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!parsed.ok) {
         throw new NotesTransformError(
             "transform-output-invalid-json",
             "Transform returned invalid JSON shape.",
@@ -248,50 +245,47 @@ export function parseNotesTransformMarkdown(
         );
     }
 
-    const parsedObject = parsed as Record<string, unknown>;
-    const jsonKeys = safeJsonKeys(parsedObject);
-    const value = parsedObject[key];
-
-    if (typeof value !== "string") {
+    const keyResult = readExactStringKey(parsed.value, key);
+    if (!keyResult.ok && keyResult.stage === "missing-key") {
         throw new NotesTransformError(
             "transform-output-missing-key",
             `Transform response missing ${key}.`,
             {
                 stage: "missing-key",
                 outputChars,
-                jsonKeys,
+                jsonKeys: keyResult.keys,
                 expectedKey: key,
             }
         );
     }
 
-    if (jsonKeys.length !== 1 || jsonKeys[0] !== key) {
+    if (!keyResult.ok && keyResult.stage === "unexpected-key") {
         throw new NotesTransformError(
             "transform-output-unexpected-key",
             "Transform response included unexpected keys.",
             {
                 stage: "unexpected-key",
                 outputChars,
-                jsonKeys,
+                jsonKeys: keyResult.keys,
                 expectedKey: key,
             }
         );
     }
 
-    const markdown = value.trim();
-    if (!markdown) {
+    if (!keyResult.ok) {
         throw new NotesTransformError(
             "transform-output-empty",
             "Transform returned empty markdown.",
             {
                 stage: "empty-output",
                 outputChars,
-                jsonKeys,
+                jsonKeys: keyResult.keys,
                 expectedKey: key,
             }
         );
     }
 
+    const markdown = keyResult.value;
     if (looksLikeTransformErrorOutput(markdown)) {
         throw new NotesTransformError(
             "transform-output-error-like",
@@ -299,7 +293,7 @@ export function parseNotesTransformMarkdown(
             {
                 stage: "error-like-output",
                 outputChars,
-                jsonKeys,
+                jsonKeys: keyResult.keys,
                 expectedKey: key,
             }
         );

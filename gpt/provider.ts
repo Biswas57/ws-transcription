@@ -70,6 +70,7 @@ export async function runOpenAIResponsesJson(args: {
             providerCode: metadata.code,
             providerType: metadata.type,
             providerParam: metadata.param,
+            providerCategory: metadata.category,
         });
         logResponsesProviderError(args, err, durationMs);
         throw err;
@@ -167,8 +168,7 @@ function logResponsesProviderError(
     if (metadata.type) parts.push(`providerType: ${metadata.type}`);
     if (metadata.param) parts.push(`providerParam: ${metadata.param}`);
     if (metadata.requestId) parts.push(`requestId: ${metadata.requestId}`);
-    if (metadata.message) parts.push(`providerMessage: ${metadata.message}`);
-    if (metadata.messageOmitted) parts.push(`providerMessage: omitted`);
+    if (metadata.category) parts.push(`providerCategory: ${metadata.category}`);
 
     console.error(`[${args.label}] Provider request failed — ${parts.join(", ")}`);
 }
@@ -186,8 +186,7 @@ function safeProviderErrorMetadata(err: unknown): {
     type?: string;
     param?: string;
     requestId?: string;
-    message?: string;
-    messageOmitted?: boolean;
+    category?: string;
 } {
     if (!err || typeof err !== "object") return {};
 
@@ -195,7 +194,6 @@ function safeProviderErrorMetadata(err: unknown): {
     const headers = record.headers && typeof record.headers === "object"
         ? record.headers as Record<string, unknown>
         : undefined;
-    const message = safeProviderMessage(record.message);
 
     return {
         status: typeof record.status === "number" && Number.isFinite(record.status)
@@ -211,21 +209,33 @@ function safeProviderErrorMetadata(err: unknown): {
             safeIdentifierValue(record.requestId) ??
             safeIdentifierValue(headers?.["x-request-id"]) ??
             undefined,
-        message: message ?? undefined,
-        messageOmitted: typeof record.message === "string" && !message,
+        category: providerErrorCategory(record),
     };
 }
 
-function safeProviderMessage(value: unknown): string | null {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 300 || /[{}\[\]'"`\r\n]/.test(trimmed)) return null;
+function providerErrorCategory(record: Record<string, unknown>): string {
+    const status = typeof record.status === "number" && Number.isFinite(record.status)
+        ? record.status
+        : undefined;
+    const code = safeIdentifierValue(record.code);
+    const type = safeIdentifierValue(record.type);
+    const signal = [code, type].filter(Boolean).join("_").toLowerCase();
 
-    const safe = trimmed
-        .replace(/[^A-Za-z0-9 _.,:;'"()/_=-]/g, "")
-        .replace(/\s+/g, " ")
-        .slice(0, 240)
-        .trim();
+    if (signal.includes("timeout") || signal.includes("timedout") || code === "ETIMEDOUT") {
+        return "provider_timeout";
+    }
+    if (status === 401 || status === 403 || signal.includes("auth") || signal.includes("permission")) {
+        return "provider_auth_error";
+    }
+    if (status === 429 || signal.includes("rate")) {
+        return "provider_rate_limited";
+    }
+    if (status && status >= 400 && status < 500) {
+        return "provider_bad_request";
+    }
+    if (status && status >= 500) {
+        return "provider_server_error";
+    }
 
-    return safe.length > 0 ? safe : null;
+    return "provider_error";
 }

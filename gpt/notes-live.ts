@@ -171,7 +171,7 @@ export function parseNotesLivePatchContent(content: string): NotesLivePatch {
         };
     } catch {
         console.warn("[notes-incremental-patch] JSON parse failed, returning empty patch");
-        return { updates: [], parseFailed: true };
+        return emptyNotesLivePatch(true);
     }
 }
 
@@ -193,6 +193,10 @@ type NotesLivePatchFailure = {
     durationMs?: number;
     incompleteReason?: string | null;
 };
+
+function emptyNotesLivePatch(parseFailed = false): NotesLivePatch {
+    return parseFailed ? { updates: [], parseFailed: true } : { updates: [] };
+}
 
 export function buildNotesLivePatchRequest(
     transcriptSegment: string,
@@ -344,7 +348,7 @@ export async function generateNotesIncrementalPatch(
     noteStyle: string,
     sections: string[]
 ): Promise<NotesLivePatch> {
-    if (transcriptSegment.trim().length < 20) return { updates: [] };
+    if (transcriptSegment.trim().length < 20) return emptyNotesLivePatch();
 
     const request = buildNotesLivePatchRequest(
         transcriptSegment,
@@ -363,7 +367,7 @@ export async function generateNotesIncrementalPatch(
         logNotesLivePatchFailed({ category: "provider_error" }, request, safeErrorInfo(err));
     }
 
-    return { updates: [] };
+    return emptyNotesLivePatch();
 }
 
 async function generateNotesIncrementalPatchResponses(
@@ -392,7 +396,7 @@ async function generateNotesIncrementalPatchResponses(
 
     if (response.status === "incomplete") {
         return {
-            patch: { updates: [], parseFailed: true },
+            patch: emptyNotesLivePatch(true),
             failure: {
                 category: "incomplete_response",
                 outputChars: response.outputText.length,
@@ -404,7 +408,7 @@ async function generateNotesIncrementalPatchResponses(
 
     if (!response.outputText) {
         return {
-            patch: { updates: [], parseFailed: true },
+            patch: emptyNotesLivePatch(true),
             failure: {
                 category: "empty_output",
                 outputChars: 0,
@@ -427,7 +431,7 @@ async function generateNotesIncrementalPatchResponses(
 
     if (!hasStrictNotesLivePatchShape(response.outputText)) {
         return {
-            patch: { updates: [], parseFailed: true },
+            patch: emptyNotesLivePatch(true),
             failure: {
                 category: "schema_invalid",
                 outputChars: response.outputText.length,

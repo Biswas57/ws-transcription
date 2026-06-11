@@ -1,5 +1,7 @@
 # T-085 Final Model / Reasoning Decisions Before T-083
 
+> Historical note: this report records model/reasoning evaluation and decision stages. Current runtime architecture is documented in `DECISIONS.md` and `AI_AGENT_CONTEXT.md`; Reorganise is now low reasoning by default and experiment-era runtime overrides have been removed.
+
 ## Executive Summary
 
 T-085d/T-085e expanded the offline fixture coverage and ran the opt-in OpenAI evaluation matrix for the non-live final/transform flows before starting T-083 live Responses work.

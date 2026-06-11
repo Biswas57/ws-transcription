@@ -1,5 +1,7 @@
 # T-083 / T-090 Live Responses Strict-Schema Evaluation
 
+> Historical note: this report records a live Chat-vs-Responses candidate evaluation stage. Current runtime architecture is documented in `DECISIONS.md` and `AI_AGENT_CONTEXT.md`; Notes live is now Responses-only with no Chat fallback, while Forms live remains Chat.
+
 ## Executive Summary
 
 Status: expanded and calibrated live-only opt-in eval completed on 2026-06-10.

@@ -40,7 +40,7 @@ Key findings:
 - T-129 moved source-run manual WebSocket clients into `tools/manual/` and updated package scripts.
 - Historical eval reports still mention candidate providers, rollback flags, Chat-vs-Responses comparisons, and earlier reasoning/model experiments. These are useful evidence, but they should be easier to distinguish from current runtime architecture.
 - JSON extraction, strict-output validation, and fallback handling are repeated across several GPT feature modules. This is expected after hardening, but it is now a cleanup candidate.
-- Provider diagnostics are content-safe in intent, but the free-form provider message surface should be narrowed further.
+- T-130 narrowed provider diagnostics to structured safe metadata and generic provider categories, with no free-form provider message logging.
 - `parse-gpt.ts` is still actively imported by handlers, routes, and tests. It is a compatibility facade, not dead code.
 - No active Groq, cache, pricing, paywall, Stripe, or legacy dependency path was found in runtime source.
 
@@ -58,8 +58,8 @@ Key findings:
 
 | Candidate | Evidence | Risk | Recommended action | Ticket |
 | --- | --- | --- | --- | --- |
-| Provider diagnostics hardening | `gpt/provider.ts` logs sanitized provider metadata, including a shortened provider message. | Over-tightening can make Render/OpenAI failures harder to debug; under-tightening can leak user/provider text. | Standardise safe provider diagnostics around status, code, type, param, request id, finish/incomplete reason, token usage, and safe error categories. Avoid raw provider text by default. | T-130 |
-| Parser and fallback helper unification | `gpt/forms.ts`, `gpt/notes-live.ts`, `gpt/notes-final.ts`, and `gpt/notes-transform.ts` each carry strict JSON parsing and fallback rules. | Shared helpers could accidentally change mode-specific safety behaviour. | Extract only the mechanical pieces first: JSON object extraction, required-string validation, safe parse metadata, and schema-key checks. Keep each flow's fallback policy local. | T-131 |
+| Provider diagnostics hardening | Resolved by T-130. Provider failures now log safe structured metadata and generic categories rather than free-form provider messages. | Over-tightening can make Render/OpenAI failures harder to debug; under-tightening can leak user/provider text. | Keep diagnostics centred on status, code, type, param, request id, finish/incomplete reason, token usage, duration, model/API, schema name, and safe categories. | Completed |
+| Parser and fallback helper unification | Resolved by T-131 for mechanical JSON object/key parsing and Notes live no-op patch creation. | Shared helpers could accidentally change mode-specific safety behaviour. | Keep flow-specific fallback policy in feature modules. Future parser cleanup should remain test-led and avoid public-key aliasing. | Completed |
 | Eval runner/report organisation | `test/gpt-openai-eval-runner.ts`, `test/gpt-openai-evals.test.ts`, and `test/fixtures/gpt-evals/*` carry valuable but broad evaluation material. | Cleanup could remove evidence or make opt-in evals harder to run. | Keep fixtures and runner; archive or annotate superseded reports and make current-vs-historical status obvious. | T-132 |
 | Manual tooling structure | Package scripts call manual clients and load scripts directly. | Moving files can break local smoke/load commands. | Move in a small path-only commit with script updates and a focused manual command check. | T-129 |
 
@@ -67,8 +67,8 @@ Key findings:
 
 | Candidate | Evidence | Why risky | Recommended action | Ticket |
 | --- | --- | --- | --- | --- |
-| `parse-gpt.ts` compatibility facade review | Handlers, routes, and tests still import from `parse-gpt.ts`; GPT feature code now lives under `gpt/*`. | Removing or bypassing the facade touches broad imports and can create churn without product value. | Review import direction and value first. Keep the facade unless a dedicated ticket proves migration helps maintainability. | T-133 |
-| Broader GPT module boundary review | GPT modules have reasonable lower-level imports today, but feature modules and eval helpers expose extra functions for tests/evals. | Aggressive boundary cleanup can disturb prompt/schema/fallback invariants. | Review module boundaries and export surface before moving runtime code. Do not combine with parser cleanup. | T-133 |
+| `parse-gpt.ts` compatibility facade review | T-133 reviewed active imports from handlers, routes, and tests. GPT feature code lives under `gpt/*`, while runtime callers still benefit from the facade. | Removing or bypassing the facade touches broad imports and can create churn without product value. | Keep `parse-gpt.ts` as the intentional compatibility facade unless a future ticket proves direct imports reduce meaningful complexity. | Completed |
+| Broader GPT module boundary review | T-133 found reasonable lower-level import direction: config/provider/json helpers do not import feature modules; feature modules import lower-level helpers and app-safe logging. | Aggressive boundary cleanup can disturb prompt/schema/fallback invariants. | Leave boundaries as-is for now. Review again only if future GPT module work creates circularity or unclear ownership. | Completed |
 | `NotesHandler` lifecycle extraction | `handlers/NotesHandler.ts` remains one of the larger runtime files. | Notes lifecycle covers audio intake, VAD, queues, stop flush, finalisation, reconnect cap, and stale-send safety. Refactoring here is high-risk. | Defer. Do not include in bloat cleanup unless a future reliability ticket needs it. | Deferred |
 
 ## Do Not Remove
@@ -77,7 +77,7 @@ Key findings:
 - Notes live `fallbackAppendMarkdown`. It is required for safe provisional live structure.
 - GPT eval fixtures, reports, and opt-in eval runner. They are current quality-safety infrastructure, even if some historical reports need clearer labels.
 - VAD, ffmpeg decode, token counting, load tests, and manual clients. They may be test/manual-only, but they support backend reliability work.
-- `parse-gpt.ts` until T-133 proves a migration is worth the churn.
+- `parse-gpt.ts`. T-133 kept it as the intentional compatibility facade for handlers, routes, and tests.
 - Existing final fallback policies:
   - Notes final falls back to current canonical notes on final failure.
   - Forms final falls back to candidate attributes where safe.
@@ -101,11 +101,11 @@ Status: completed after this plan. The repo now has one shared sample fixture an
 
 ### T-130 Provider diagnostics hardening
 
-Scope:
+Status: completed. Provider diagnostics now expose safe structured metadata without raw provider text.
 
-- Tighten provider diagnostics so provider failures expose safe structured metadata without raw provider text.
-- Preserve status, code, type, param, request id, incomplete reason, token usage, duration, model, API, and schema name where safe.
-- Keep logs useful for Render/OpenAI debugging.
+Preserved:
+
+- status, code, type, param, request id, incomplete reason, token usage, duration, model, API, schema name, input shape, instruction presence, and safe provider category.
 
 Validation:
 
@@ -114,11 +114,12 @@ Validation:
 
 ### T-131 Parser and fallback helper unification
 
-Scope:
+Status: completed for the low-risk mechanical helpers.
 
 - Extract repeated mechanical JSON parsing and schema-key helpers where safe.
 - Keep mode-specific fallback policies in their feature modules.
 - Preserve all current public result shapes and failure behaviour.
+- Notes live now uses a single explicit no-op patch helper for parse/provider/schema failure paths.
 
 Validation:
 
@@ -127,7 +128,7 @@ Validation:
 
 ### T-132 Eval/docs archive cleanup
 
-Scope:
+Status: completed. Historical eval reports are preserved in place with banners where they discuss superseded candidate/runtime states.
 
 - Mark superseded eval reports and candidate/rollback language as historical.
 - Keep useful evidence, raw-output exclusions, fixture intent, and current-runtime summary.
@@ -141,11 +142,12 @@ Validation:
 
 ### T-133 GPT module boundary review
 
-Scope:
+Status: completed. Decision: keep `parse-gpt.ts`.
 
-- Review whether `parse-gpt.ts` should remain the compatibility facade.
-- Document GPT module import boundaries and export intent.
-- Recommend any import migration separately; do not combine with runtime edits.
+- `parse-gpt.ts` remains a compatibility facade for existing handlers, routes, and tests.
+- Direct `gpt/*` imports remain appropriate for focused test/eval helpers that need schemas, request builders, or config.
+- Removing the facade would create broad import churn without a clear reliability or maintainability win today.
+- No future facade-removal ticket was added.
 
 Validation:
 

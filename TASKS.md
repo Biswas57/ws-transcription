@@ -84,6 +84,10 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-127 High-confidence backend repo hygiene | Completed | P3, backend cleanup. Removed tracked OS metadata, tightened dependency classification for test/load-only packages, and removed stale load-test cache-hit reporting without changing runtime behaviour or contracts. |
 | T-128 Backend bloat reduction plan | Completed | P2/P3, backend cleanup planning. Audited remaining repo, dependency, parser, diagnostics, eval, and GPT module bloat; classified cleanup by risk; and added scoped follow-up tickets without changing runtime behaviour. |
 | T-129 Backend repo structure cleanup | Completed | P3, backend cleanup. Confirmed no stale npm lockfile was tracked, consolidated duplicate sample fixtures, and moved manual clients out of automated test paths without changing runtime behaviour or contracts. |
+| T-130 Provider diagnostics hardening | Completed | P2, backend privacy/reliability. Tightened provider error diagnostics to avoid free-form provider message/output leakage while preserving safe status, type/code, request ID, category, duration, and token metadata. Runtime behaviour and contracts unchanged. |
+| T-131 Parser and fallback helper unification | Completed | P2, backend cleanup/reliability. Consolidated duplicated GPT JSON/key parsing and Notes live no-op helpers while preserving strict public keys, Notes live failure no-op behaviour, final fallbacks, Forms parsing, transform contracts, and content-safe diagnostics. |
+| T-132 Eval/docs archive cleanup | Completed | P3, backend docs/evals cleanup. Marked superseded eval/provider-candidate reports as historical and clarified current runtime docs without deleting useful evidence or changing runtime behaviour. |
+| T-133 GPT module boundary review | Completed | P3, backend architecture cleanup. Reviewed `parse-gpt.ts` and `gpt/*` module boundaries after parser/diagnostics cleanup and documented that the facade should remain as intentional compatibility surface for now. |
 
 ## Active
 
@@ -109,10 +113,6 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-107 Explore template recommendation from session content | Backlog | P3. Evaluate whether the backend can recommend templates or custom blocks based on session content without risking latency or privacy. Should be opt-in or non-blocking. |
 | T-108 Explore external integrations via tools/MCP | Backlog | P3. Research Notion, Google Docs, Calendar, CRM, or ticketing integrations through app-owned functions or MCP. Require explicit user consent, approval UX, and clear data-sharing boundaries. |
 | T-109 Reject/avoid computer-use backend workflows | Backlog | P4. Document why computer-use style automation is not appropriate for the backend recording pipeline unless a future product requirement strongly justifies it. |
-| T-130 Provider diagnostics hardening | Backlog | P2/P3, privacy/reliability. Tighten provider failure diagnostics so logs keep safe status/code/type/param/request-id/token metadata while avoiding raw provider text, prompts, notes, transcripts, or user content. |
-| T-131 Parser and fallback helper unification | Backlog | P2/P3, backend cleanup. Reduce duplicated strict JSON extraction/schema/fallback helpers across GPT flows while preserving Notes live no-op failure, final Notes/Forms fallbacks, and transform parse error semantics. |
-| T-132 Eval/docs archive cleanup | Backlog | P3, backend clarity. Mark or move superseded eval reports and historical candidate/rollback language so current runtime docs stay clear while preserving useful eval evidence. |
-| T-133 GPT module boundary review | Backlog | P3, backend architecture planning. Review whether `parse-gpt.ts` should remain as a compatibility facade and assess GPT module boundaries before any import migration or file reorganisation. |
 
 ## Cross-Repo References
 

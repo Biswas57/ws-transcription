@@ -1,5 +1,7 @@
 # T-085 Reasoning And Model Evaluation
 
+> Historical note: this report records an evaluation-planning stage and may describe earlier runtime defaults or candidates. Current runtime architecture is documented in `DECISIONS.md` and `AI_AGENT_CONTEXT.md`; Notes live is now Responses-only with no Chat fallback, and Reorganise is low reasoning by default.
+
 This is a non-production evaluation report. It does not change prompts, models,
 reasoning effort, API routing, schemas, provider behaviour, WebSocket contracts,
 HTTP contracts, dependencies, or product behaviour.

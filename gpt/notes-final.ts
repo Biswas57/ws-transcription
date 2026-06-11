@@ -5,9 +5,9 @@ import {
     notesFinalOutputBudget,
     truncateTranscriptPreservingEdges,
 } from "./model-config.js";
-import { extractJsonObjectText } from "./json-parsing.js";
+import { parseJsonObjectText, readExactStringKey } from "./json-parsing.js";
 import { runOpenAIResponsesJson } from "./provider.js";
-import { formatSafeJsonKeys, recordUsageEvent, safeErrorInfo, safeJsonKeys } from "../safe-log.js";
+import { formatSafeJsonKeys, recordUsageEvent, safeErrorInfo } from "../safe-log.js";
 
 export const NOTES_FINAL_SYS_TXT = `\
 You are a professional note editor in an Australian context.
@@ -221,9 +221,8 @@ export async function finalizeNotes(
             return currentNotes;
         }
 
-        const parsed = JSON.parse(extractJsonObjectText(content)) as { notesMarkdown?: string };
-        const parsedKeys = safeJsonKeys(parsed);
-        if (parsedKeys.length !== 1 || parsedKeys[0] !== "notesMarkdown") {
+        const parsed = parseJsonObjectText(content);
+        if (!parsed.ok) {
             recordUsageEvent("notes_final_failed", {
                 flow: "notes-final",
                 reason: "schema-failed",
@@ -233,12 +232,28 @@ export async function finalizeNotes(
             });
             console.warn(
                 `[notes-final] Unexpected response keys, returning current — ` +
-                `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
+                `jsonKeys: ${formatSafeJsonKeys([])}`
             );
             return currentNotes;
         }
-        const finalized = parsed.notesMarkdown?.trim();
-        if (!finalized) {
+
+        const parsedNotes = readExactStringKey(parsed.value, "notesMarkdown");
+        if (!parsedNotes.ok && parsedNotes.stage === "unexpected-key") {
+            recordUsageEvent("notes_final_failed", {
+                flow: "notes-final",
+                reason: "schema-failed",
+                transcriptChars: fullTranscript.length,
+                currentNotesChars: currentNotes.length,
+                outputChars: content.length,
+            });
+            console.warn(
+                `[notes-final] Unexpected response keys, returning current — ` +
+                `jsonKeys: ${formatSafeJsonKeys(parsedNotes.keys)}`
+            );
+            return currentNotes;
+        }
+
+        if (!parsedNotes.ok) {
             recordUsageEvent("notes_final_failed", {
                 flow: "notes-final",
                 reason: "missing-key",
@@ -249,6 +264,7 @@ export async function finalizeNotes(
             console.warn("[notes-final] Missing notesMarkdown key, returning current");
             return currentNotes;
         }
+        const finalized = parsedNotes.value;
         console.log(`[notes-final] ${config.model} pass complete: ${finalized.length} chars`);
         recordUsageEvent("notes_final_complete", {
             flow: "notes-final",

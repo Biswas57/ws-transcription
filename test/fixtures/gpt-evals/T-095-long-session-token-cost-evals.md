@@ -1,5 +1,7 @@
 # T-095 Long-Session Token / Cost Measurement Scaffolding
 
+> Historical note: this report is an offline synthetic measurement scaffold. Current runtime architecture is documented in `DECISIONS.md` and `AI_AGENT_CONTEXT.md`; use this report as cost-shape evidence, not as runtime configuration.
+
 This report is an offline, synthetic measurement scaffold. It does not call
 OpenAI and it is not billing truth. Estimates use a simple 4-chars-per-token
 approximation so the backend can reason about long-session cost shape before

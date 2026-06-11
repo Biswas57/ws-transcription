@@ -5,13 +5,12 @@ import {
     GPT_REQUEST_TIMEOUT_MS,
     truncateTranscriptPreservingEdges,
 } from "./model-config.js";
-import { extractJsonObjectText, isRecord } from "./json-parsing.js";
+import { isRecord, parseJsonObjectText, readExactJsonKey } from "./json-parsing.js";
 import { openai, runOpenAIResponsesJson } from "./provider.js";
 import {
     formatSafeJsonKeys,
     recordUsageEvent,
     safeErrorInfo,
-    safeJsonKeys,
     safeUsageMetadata,
 } from "../safe-log.js";
 
@@ -343,9 +342,8 @@ export async function parseFinalAttributes(
             return candidateAttributes;
         }
 
-        const parsed = JSON.parse(extractJsonObjectText(content)) as { finalAttributes?: unknown };
-        const parsedKeys = safeJsonKeys(parsed);
-        if (parsedKeys.length !== 1 || parsedKeys[0] !== "finalAttributes") {
+        const parsed = parseJsonObjectText(content);
+        if (!parsed.ok) {
             recordUsageEvent("forms_final_failed", {
                 flow: "forms-final",
                 reason: "schema-failed",
@@ -354,11 +352,26 @@ export async function parseFinalAttributes(
             });
             console.warn(
                 `[final] Unexpected response keys, returning candidates — ` +
-                `jsonKeys: ${formatSafeJsonKeys(parsedKeys)}`
+                `jsonKeys: ${formatSafeJsonKeys([])}`
             );
             return candidateAttributes;
         }
-        if (!isRecord(parsed.finalAttributes)) {
+
+        const parsedAttributes = readExactJsonKey(parsed.value, "finalAttributes");
+        if (!parsedAttributes.ok && parsedAttributes.stage === "unexpected-key") {
+            recordUsageEvent("forms_final_failed", {
+                flow: "forms-final",
+                reason: "schema-failed",
+                transcriptChars: fullTranscript.length,
+                outputChars: content.length,
+            });
+            console.warn(
+                `[final] Unexpected response keys, returning candidates — ` +
+                `jsonKeys: ${formatSafeJsonKeys(parsedAttributes.keys)}`
+            );
+            return candidateAttributes;
+        }
+        if (!parsedAttributes.ok || !isRecord(parsedAttributes.value)) {
             recordUsageEvent("forms_final_failed", {
                 flow: "forms-final",
                 reason: "missing-key",
@@ -368,7 +381,7 @@ export async function parseFinalAttributes(
             console.warn("[final] Missing finalAttributes key, returning candidates");
             return candidateAttributes;
         }
-        const raw = parsed.finalAttributes;
+        const raw = parsedAttributes.value;
         const merged = { ...normalizedCandidates };
         let updatedCount = 0;
 

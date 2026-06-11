@@ -1,5 +1,7 @@
 # T-085b Reasoning / Model Evaluation Results
 
+> Historical note: this report records opt-in model/reasoning eval results and candidate comparisons. Current runtime architecture is documented in `DECISIONS.md` and `AI_AGENT_CONTEXT.md`; production defaults should be read from `GPT_FLOW_CONFIG`, not inferred from this report alone.
+
 ## Executive Summary
 
 Status: completed after providing Node with the local macOS certificate bundle.

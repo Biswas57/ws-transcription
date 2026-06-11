@@ -64,8 +64,8 @@ function responsesJson(content: string, overrides: Record<string, unknown> = {})
     };
 }
 
-function provider400Error(): Error {
-    const err = new Error("Invalid parameter: text.format.type");
+function provider400Error(message = "Invalid parameter: text.format.type"): Error {
+    const err = new Error(message);
     Object.assign(err, {
         status: 400,
         code: "invalid_request_error",
@@ -196,8 +196,10 @@ describe("parse-gpt stabilisation", () => {
 
     it("returns raw Whisper text when revision model call throws", async () => {
         const raw = "This raw Whisper transcript should survive revision failure.";
-        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error());
+        const rawProviderMessage = "UNIQUE_PROVIDER_MESSAGE_SHOULD_NOT_APPEAR text.format.type includes raw details";
+        openAiMock.responsesCreate.mockRejectedValueOnce(provider400Error(rawProviderMessage));
         const providerLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const usageLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
         try {
             await expect(reviseTranscription(raw)).resolves.toBe(raw);
@@ -211,11 +213,18 @@ describe("parse-gpt stabilisation", () => {
             expect(providerLog.mock.calls[0]?.[0]).toContain("providerType: invalid_request_error");
             expect(providerLog.mock.calls[0]?.[0]).toContain("providerParam: text.format.type");
             expect(providerLog.mock.calls[0]?.[0]).toContain("requestId: req_safe123");
+            expect(providerLog.mock.calls[0]?.[0]).toContain("providerCategory: provider_bad_request");
             expect(providerLog.mock.calls[0]?.[0]).toContain("textFormat: json_schema");
             expect(providerLog.mock.calls[0]?.[0]).toContain("schemaName: revision_response");
             expect(providerLog.mock.calls[0]?.[0]).not.toContain(raw);
+            expect(providerLog.mock.calls[0]?.[0]).not.toContain(rawProviderMessage);
+            expect(providerLog.mock.calls[0]?.[0]).not.toContain("providerMessage");
+            const usageOutput = usageLog.mock.calls.flat().join("\n");
+            expect(usageOutput).toContain("providerCategory: provider_bad_request");
+            expect(usageOutput).not.toContain(rawProviderMessage);
         } finally {
             providerLog.mockRestore();
+            usageLog.mockRestore();
         }
     });
 
@@ -918,6 +927,23 @@ describe("parse-gpt stabilisation", () => {
         expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).target_sections).toEqual(["Concepts", "Actions"]);
+    });
+
+    it("rejects common reorganise alias keys", async () => {
+        for (const aliasKey of ["notesMarkdown", "markdown", "outputMarkdown"]) {
+            openAiMock.responsesCreate.mockResolvedValueOnce(
+                responsesJson(JSON.stringify({ [aliasKey]: `${LONG_NOTES}\n\n## Actions\n\n- Alias output.` }))
+            );
+
+            await expect(generateNotesReorganisation({ notesMarkdown: LONG_NOTES })).rejects.toMatchObject({
+                code: "transform-output-missing-key",
+                details: expect.objectContaining({
+                    stage: "missing-key",
+                    jsonKeys: [aliasKey],
+                    expectedKey: "reorganisedMarkdown",
+                }),
+            });
+        }
     });
 
     it("keeps Reorganise low by default and final-quality calls medium", async () => {
