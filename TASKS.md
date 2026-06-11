@@ -81,6 +81,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-124 Consolidate GPT model/provider configuration | Completed | P1, backend architecture. Centralised GPT flow provider/model/reasoning defaults in `GPT_FLOW_CONFIG` so runtime behaviour is explicit and testable. |
 | T-125 Separate eval-only scaffolding from production paths | Completed | P2, backend cleanup. Kept eval fixtures/runners test-only while production runtime files describe stable behaviour rather than candidate providers or rollback flags. |
 | T-126 Document stable GPT runtime architecture | Completed | P1, backend architecture. Documented the current GPT runtime architecture, app-owned state, strict schemas, live failure policy, safe logging, bounded live context, async jobs, and deferred work. |
+| T-127 High-confidence backend repo hygiene | Completed | P3, backend cleanup. Removed tracked OS metadata, tightened dependency classification for test/load-only packages, and removed stale load-test cache-hit reporting without changing runtime behaviour or contracts. |
 
 ## Active
 

@@ -34,7 +34,6 @@ interface WaveMetrics {
   p50: number;
   p95: number;
   p99: number;
-  cacheHitRate: string;
   failures: string[];
 }
 
@@ -68,7 +67,6 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
             failure: `Worker error: ${err instanceof Error ? err.message : String(err)}`,
             msgs: 0,
             latencyMs: [],
-            cacheHits: 0,
           })));
         });
       })
@@ -78,15 +76,11 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
 
   const hist = build({ lowestDiscernibleValue: 1, highestTrackableValue: 60000, numberOfSignificantValueDigits: 3 });
   let ok = 0,
-    fail = 0,
-    hits = 0,
-    totalMsgs = 0;
+    fail = 0;
   const failures: string[] = [];
 
   results.forEach((r) => {
     (r.latencyMs as number[]).forEach((l) => hist.recordValue(Math.round(l)));
-    hits += r.cacheHits;
-    totalMsgs += r.msgs;
     if (r.endReason === "ok") {
       ok++;
     } else {
@@ -102,7 +96,6 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
     p50: hist.getValueAtPercentile(50),
     p95: hist.getValueAtPercentile(95),
     p99: hist.getValueAtPercentile(99),
-    cacheHitRate: totalMsgs > 0 ? ((hits / totalMsgs) * 100).toFixed(1) + "%" : "0%",
     failures,
   };
 }
@@ -135,7 +128,7 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
 
       console.log(
         chalk.green(
-          `✓ ${m.ok}/${m.vus} ok  •  p50 ${m.p50} ms  p95 ${m.p95} ms  p99 ${m.p99} ms  •  cacheHit ${m.cacheHitRate}  •  ${t1}s`
+          `✓ ${m.ok}/${m.vus} ok  •  p50 ${m.p50} ms  p95 ${m.p95} ms  p99 ${m.p99} ms  •  ${t1}s`
         )
       );
       if (m.fail) {
@@ -155,6 +148,6 @@ async function runWave(vus: number, audio: Buffer): Promise<WaveMetrics> {
   console.log(chalk.blue("====================="));
   results.forEach((r, i) => {
     const successRate = ((r.ok / r.vus) * 100).toFixed(1);
-    console.log(`Wave ${i + 1} (${r.vus} users): ${successRate}% success, p95: ${r.p95}ms, cache: ${r.cacheHitRate}`);
+    console.log(`Wave ${i + 1} (${r.vus} users): ${successRate}% success, p95: ${r.p95}ms`);
   });
 })();

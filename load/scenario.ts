@@ -11,7 +11,6 @@ export interface VuResult {
     failure?: string;
     msgs: number;
     latencyMs: number[];
-    cacheHits: number;
 }
 
 export interface VuConfig {
@@ -53,7 +52,6 @@ export async function virtualUser(cfg: VuConfig): Promise<VuResult> {
     const latencies: number[] = [];
     let lastSend = 0;
     let msgs = 0;
-    let cacheHits = 0;
     let done = false;
     let settled = false;
     let lastServerError = "";
@@ -69,7 +67,7 @@ export async function virtualUser(cfg: VuConfig): Promise<VuResult> {
             if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
                 ws.close();
             }
-            resolve({ id: cfg.id, endReason, failure, msgs, latencyMs: latencies, cacheHits });
+            resolve({ id: cfg.id, endReason, failure, msgs, latencyMs: latencies });
         };
 
         killer = setTimeout(() => {
@@ -114,7 +112,6 @@ export async function virtualUser(cfg: VuConfig): Promise<VuResult> {
         ws.on("message", (data) => {
             msgs++;
             latencies.push(performance.now() - lastSend);
-            if (data.toString().includes('"cacheHit":true')) cacheHits++;
 
             // Check if this is the final transcription result
             try {
