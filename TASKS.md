@@ -34,6 +34,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-083–T-085e/T-090/T-094a/T-094b GPT eval infrastructure and decisions | Completed | P2, backend evals. Added offline fixtures, opt-in OpenAI eval runner, live Chat-vs-Responses comparisons, and model/reasoning decision reports. |
 | T-123–T-126 Runtime architecture stabilisation | Completed | P1, backend architecture. Removed experiment flags, centralised `GPT_FLOW_CONFIG`, separated eval-only scaffolding, and documented stable runtime behaviour. |
 | T-127–T-134 Backend cleanup and documentation compaction | Completed | P2/P3, backend cleanup. Removed repo bloat, hardened diagnostics/parsers, reviewed GPT boundaries, compacted tickets, and archived detailed history. |
+| T-135 Add short-window Notes finalisation recovery | Completed | P1/P2, backend reliability. Added short-lived app-owned recovery for completed Notes finalisation results with owner/session guards and safe metadata-only diagnostics. |
 
 ## Cross-Repo References
 
@@ -42,3 +43,4 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-180 Notes transform pending/cancel/stale UX | Completed | Web repo reference. Preview/apply transforms use run IDs so stale results cannot overwrite newer notes. |
 | T-181 Safe performance observability | Needs verification | Web/backend reference. Verify safe metadata logs for template queries, Notes transform bridge latency/errors, and backend observability. |
 | T-182 Add multi-step Notes undo/redo history | Backlog | Web repo reference. Add bounded undo/redo for manual edits, transform Apply, final replacements, and template-related note changes. |
+| T-186 Frontend recovery UX for interrupted finalisation/transforms | Backlog | Web repo reference. Persist short-lived recovery descriptors and poll backend/web bridge recovery endpoints with session/source guards and no stale auto-apply. |

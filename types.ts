@@ -60,6 +60,7 @@ export type InboundMessage = StartPayload | StopPayload;
 export interface StartedMessage {
     type: "started";
     mode: "forms" | "notes";
+    finalisationRecoveryId?: string;
 }
 
 export interface AttributesUpdateMessage {

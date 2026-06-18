@@ -99,7 +99,7 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `VAD_MODE`: optional Notes VAD mode, one of `off`, `dry-run`, or `gate`; default is `off`.
 - `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
 - `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
-- `NOTES_TRANSFORM_SECRET`: required for server-to-server Notes transform HTTP endpoints; callers send `Authorization: Bearer <secret>`.
+- `NOTES_TRANSFORM_SECRET`: required for server-to-server Notes transform and finalisation recovery HTTP endpoints; callers send `Authorization: Bearer <secret>`.
 
 ## HTTP Notes Transform Contract
 
@@ -187,6 +187,12 @@ Started:
 
 ```json
 { "type": "started", "mode": "forms" }
+```
+
+Authenticated Notes starts may include an additive recovery handle:
+
+```json
+{ "type": "started", "mode": "notes", "finalisationRecoveryId": "opaque-id" }
 ```
 
 Forms incremental:
@@ -290,6 +296,19 @@ Do not drain stale incremental GPT backlog.
 Continuation uses `continuation: true` and `currentNotesMarkdown`. The backend seeds from supplied current notes markdown; the old full transcript is not required.
 
 VAD modes are `off`, `dry-run`, and `gate`. VAD defaults to `off`, fails open to Whisper, is intended for Notes gate behaviour only, does not gate Forms, must never skip stop flush, and logs safe metadata only.
+
+### Notes Finalisation Recovery
+
+T-135 is the backend half of cross-repo T-186. Keep normal WebSocket `notes_final` delivery as the fast path; the recovery mailbox is only for mobile/background cases where finalisation completes but the client misses the message.
+
+- Authenticated Notes `started` may include an opaque `finalisationRecoveryId`; Forms `started` remains unchanged.
+- `POST /notes/finalisation-recovery` is an internal server-to-server route protected by `NOTES_TRANSFORM_SECRET`.
+- Recovery is reserved at Notes start, marked `pending` when Stop/finalisation begins, and expires terminal results shortly after completion/failure.
+- Return the same user-visible final outcome the WebSocket would have delivered. Existing fail-open final notes should be recoverable as `succeeded`, not converted into a different failure state.
+- Store successful `notesMarkdown` only briefly in memory for recovery; do not store transcript, audio, prompts, provider output, or raw errors in recovery metadata.
+- The browser should call `formify-web`; web server/tRPC derives authenticated owner/session state and calls this backend using internal Bearer auth.
+- Guard recovery by owner/session. Mismatches should return safe `not_found`-style semantics and must not log raw user IDs or recovery/session IDs.
+- Summarise/Reorganise should continue to use existing async transform jobs unless proven insufficient; T-135 is mainly for missed `notes_final` recovery.
 
 ### Handler Lifecycle And Backpressure
 

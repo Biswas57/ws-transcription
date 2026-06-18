@@ -24,6 +24,10 @@ import { reviseTranscription, generateNotesIncrementalPatch, finalizeNotes } fro
 import { applyNotesLivePatch } from "../notes-live-patch.js";
 import { recordUsageEvent, safeErrorInfo } from "../safe-log.js";
 import { resolveNotesCapWindow, type NotesCapWindowLease } from "../notes-cap-registry.js";
+import {
+    defaultNotesFinalisationRecoveryStore,
+    type NotesFinalisationRecoveryStore,
+} from "../notes-finalisation-recovery.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
 //
@@ -50,6 +54,10 @@ type StopTrigger = "client" | "session-cap";
 type NotesHandlerAuthContext = {
     userId?: string;
     recordingSessionId?: string;
+};
+
+type NotesHandlerDeps = {
+    finalisationRecoveryStore?: NotesFinalisationRecoveryStore;
 };
 
 const NOTES_UPDATE_PHASES: NotesUpdatePhase[] = [
@@ -97,12 +105,18 @@ export class NotesHandler implements TranscriptionHandler {
     private overloadSignaled = false;
     private capWindow: NotesCapWindowLease | null = null;
     private capWindowClosed = false;
+    private finalisationRecoveryId: string | null = null;
+    private finalisationRecoveryEnabled = false;
+    private finalisationRecoveryStore: NotesFinalisationRecoveryStore;
 
     constructor(
         private socket: WebSocket,
         private sessionId: string,
-        private authContext: NotesHandlerAuthContext = {}
+        private authContext: NotesHandlerAuthContext = {},
+        deps: NotesHandlerDeps = {}
     ) {
+        this.finalisationRecoveryStore =
+            deps.finalisationRecoveryStore ?? defaultNotesFinalisationRecoveryStore;
         this.st = {
             ...makeAudioState(),
             noteStyle: "general",
@@ -150,6 +164,7 @@ export class NotesHandler implements TranscriptionHandler {
         this.stopPromise = null;
         this.overloadSignaled = false;
         this.capWindowClosed = false;
+        this.reserveFinalisationRecovery();
         this.capWindow = this.authContext.userId
             ? resolveNotesCapWindow({
                 userId: this.authContext.userId,
@@ -183,9 +198,12 @@ export class NotesHandler implements TranscriptionHandler {
             sectionsChars: this.st.sections.reduce((sum, section) => sum + section.length, 0),
             capWindow: this.capWindow !== null,
             capWindowReused: this.capWindow?.capWindowReused ?? false,
+            finalisationRecovery: this.finalisationRecoveryEnabled,
         });
 
-        this.send({ type: "started", mode: "notes" });
+        this.send(this.finalisationRecoveryId
+            ? { type: "started", mode: "notes", finalisationRecoveryId: this.finalisationRecoveryId }
+            : { type: "started", mode: "notes" });
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
@@ -381,6 +399,7 @@ export class NotesHandler implements TranscriptionHandler {
         // in-flight update still completes and is awaited below; Stop then owns
         // the single pending flush + finalisation.
         this.isStopping = true;
+        this.markFinalisationRecoveryPending(trigger);
         console.log(
             `[${this.sessionId}][notes] Stop received — ` +
             `trigger: ${trigger}, queue: ${this.queue.size} queued, ${this.queue.pending} pending`
@@ -522,11 +541,11 @@ export class NotesHandler implements TranscriptionHandler {
                 this.st.noteStyle,
                 this.st.sections
             );
-            if (this.closed) return;
 
             const finalMs = Date.now() - finalStart;
             const stopMs = Date.now() - stopStart;
             const sessionMs = Date.now() - this.sessionStartedAt;
+            this.storeFinalisationRecoverySuccess(finalMarkdown, trigger, finalMs, stopMs, false);
 
             console.log(
                 `[${this.sessionId}][notes] Final pass complete — ` +
@@ -546,6 +565,10 @@ export class NotesHandler implements TranscriptionHandler {
             });
 
             st.currentMarkdown = finalMarkdown;
+            if (this.closed) {
+                this.closeCapWindow();
+                return;
+            }
             this.send({ type: "notes_final", notesMarkdown: finalMarkdown });
             this.closeCapWindow();
         } catch (err) {
@@ -557,6 +580,18 @@ export class NotesHandler implements TranscriptionHandler {
                 currentNotesChars: st.currentMarkdown.length,
             });
             console.error(`[${this.sessionId}][notes] Final pass error — ${safeErrorInfo(err)}`);
+            const stopMs = Date.now() - stopStart;
+            this.storeFinalisationRecoverySuccess(
+                st.currentMarkdown,
+                trigger,
+                Date.now() - finalStart,
+                stopMs,
+                true
+            );
+            if (this.closed) {
+                this.closeCapWindow();
+                return;
+            }
             this.send({ type: "notes_final", notesMarkdown: st.currentMarkdown });
             this.closeCapWindow();
         }
@@ -814,6 +849,66 @@ export class NotesHandler implements TranscriptionHandler {
             audioBufferBytes: this.st.audioBuffer.length,
             incomingChunkBytes,
             overloadSignaled: this.overloadSignaled,
+        });
+    }
+
+    private reserveFinalisationRecovery(): void {
+        this.finalisationRecoveryId = null;
+        this.finalisationRecoveryEnabled = false;
+        if (!this.authContext.userId) return;
+
+        try {
+            const reserved = this.finalisationRecoveryStore.reserve({
+                userId: this.authContext.userId,
+                recordingSessionId: this.authContext.recordingSessionId,
+                metadata: {
+                    mode: "notes",
+                    hasRecordingSessionId: Boolean(this.authContext.recordingSessionId),
+                },
+            });
+            this.finalisationRecoveryId = reserved.recoveryId;
+            this.finalisationRecoveryEnabled = true;
+        } catch (err) {
+            console.warn(
+                `[${this.sessionId}][notes] Finalisation recovery disabled — ${safeErrorInfo(err)}`
+            );
+            recordUsageEvent("notes_final_recovery_unavailable", {
+                mode: "notes",
+                reason: "reserve-failed",
+            });
+        }
+    }
+
+    private markFinalisationRecoveryPending(trigger: StopTrigger): void {
+        if (!this.finalisationRecoveryId) return;
+        this.finalisationRecoveryStore.markPending(this.finalisationRecoveryId, {
+            mode: "notes",
+            stopReason: trigger,
+            transcriptChars: this.st.transcript.length,
+            currentNotesChars: this.st.currentMarkdown.length,
+            pendingNotesTranscriptChars: this.pendingNotesTranscript.length,
+            passCount: this.passCount,
+        });
+    }
+
+    private storeFinalisationRecoverySuccess(
+        notesMarkdown: string,
+        trigger: StopTrigger,
+        finalMs: number,
+        stopToDoneMs: number,
+        fallback: boolean
+    ): void {
+        if (!this.finalisationRecoveryId) return;
+        this.finalisationRecoveryStore.succeed(this.finalisationRecoveryId, notesMarkdown, {
+            mode: "notes",
+            stopReason: trigger,
+            finalMs,
+            stopToDoneMs,
+            transcriptChars: this.st.transcript.length,
+            currentNotesChars: this.st.currentMarkdown.length,
+            outputChars: notesMarkdown.length,
+            fallback,
+            passCount: this.passCount,
         });
     }
 

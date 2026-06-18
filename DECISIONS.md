@@ -21,7 +21,7 @@
   - binary WebM/Opus audio chunks
   - `{ action: "stop" }`
 - Current outbound messages are:
-  - `{ type: "started", mode }`
+  - `{ type: "started", mode, finalisationRecoveryId? }`
   - `{ type: "attributes_update", attributes }`
   - `{ type: "final_attributes", attributes }`
   - `{ type: "notes_update", notesMarkdown }`
@@ -116,6 +116,20 @@ audio batch
 - Async transform job IDs are opaque, results expire, and logs must remain safe metadata only.
 - Existing synchronous transform routes remain available. Async transform results are preview-style results and do not mutate canonical notes.
 - Final Notes async job wiring is deferred because current finalisation depends on live WebSocket/session-owned transcript and current-notes state.
+
+### Short-Window Notes Finalisation Recovery
+
+- Normal WebSocket `notes_final` delivery remains the fast path.
+- Mobile browsers may freeze or disconnect while final Notes is running, so backend T-135 adds a short-lived app-owned recovery mailbox for completed final Notes results.
+- This is not full async finalisation, provider background mode, provider Conversations/state, or database persistence.
+- Authenticated Notes starts may include an additive opaque `finalisationRecoveryId` in `{ type: "started", mode: "notes", finalisationRecoveryId }`; Forms `started` remains unchanged.
+- The internal `POST /notes/finalisation-recovery` route uses `Authorization: Bearer <NOTES_TRANSFORM_SECRET>` and is for server-to-server web bridge calls only.
+- Recovery is reserved at Notes start, marked `pending` when Stop/finalisation begins, and terminal results expire after a short completion/failure TTL.
+- Recovery should mirror the same user-visible outcome that an open WebSocket would have received: successful/fail-open final notes can be recovered as `succeeded`, while true failures expose only safe error codes.
+- Successful recovery may store final `notesMarkdown` briefly as in-memory user content. It must not be logged, persisted, or kept beyond the short TTL.
+- The browser must not call the transcription backend recovery endpoint directly. `formify-web` should derive authenticated owner/session state from its server context and call this backend through the internal Bearer secret.
+- Owner/session mismatches should return safe `not_found`-style semantics so record existence is not exposed.
+- Summarise/Reorganise recovery should prefer the existing async transform job routes unless those prove insufficient. Backend T-135 is primarily for missed WebSocket `notes_final` recovery.
 
 ### Notes Transform Source Of Truth
 

@@ -10,10 +10,14 @@ import { verifyWSToken } from "./ws-token.js";
 import type { WSTokenPayload } from "./ws-token.js";
 import { safeErrorInfo } from "./safe-log.js";
 import { handleNotesTransformRequest } from "./notes-transform-routes.js";
+import { handleNotesFinalisationRecoveryRequest } from "./notes-finalisation-recovery-routes.js";
 
 const PORT = 5551;
 const server = createServer((req, res) => {
-    void handleNotesTransformRequest(req, res).catch((err) => {
+    void (async () => {
+        if (await handleNotesFinalisationRecoveryRequest(req, res)) return;
+        await handleNotesTransformRequest(req, res);
+    })().catch((err) => {
         console.error(`[app] HTTP route error — ${safeErrorInfo(err)}`);
         if (!res.headersSent) {
             const body = JSON.stringify({

@@ -4,6 +4,7 @@ import {
     clearNotesCapWindowsForTest,
     getNotesCapWindowForTest,
 } from "../notes-cap-registry.js";
+import { NotesFinalisationRecoveryStore } from "../notes-finalisation-recovery.js";
 
 const LONG_TRANSCRIPT = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
 
@@ -59,6 +60,7 @@ function messages(socket: MockSocket): Array<{
     code?: string;
     message?: string;
     notesMarkdown?: string;
+    finalisationRecoveryId?: string;
 }> {
     return socket.send.mock.calls.map(([payload]) => JSON.parse(String(payload)));
 }
@@ -116,6 +118,37 @@ afterEach(() => {
 });
 
 describe("Notes overload recovery support", () => {
+    it("includes a finalisation recovery ID for authenticated Notes starts only", async () => {
+        const authenticatedSocket = makeSocket();
+        const store = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => "handler-recovery-start",
+        });
+        const authenticatedHandler = new NotesHandler(
+            authenticatedSocket as never,
+            "test-notes-recovery-start",
+            { userId: "recovery-user", recordingSessionId: "recovery-recording" },
+            { finalisationRecoveryStore: store }
+        );
+
+        await startNotes(authenticatedHandler);
+        expect(messages(authenticatedSocket).find((msg) => msg.type === "started")).toMatchObject({
+            type: "started",
+            mode: "notes",
+            finalisationRecoveryId: "handler-recovery-start",
+        });
+
+        const unauthenticatedSocket = makeSocket();
+        const unauthenticatedHandler = new NotesHandler(
+            unauthenticatedSocket as never,
+            "test-notes-recovery-absent"
+        );
+        await startNotes(unauthenticatedHandler);
+        expect(messages(unauthenticatedSocket).find((msg) => msg.type === "started")).toEqual({
+            type: "started",
+            mode: "notes",
+        });
+    });
+
     it("signals overload once, pauses intake, and lets already accepted work continue", async () => {
         const socket = makeSocket();
         const handler = new NotesHandler(socket as never, "test-notes-overload");
@@ -180,10 +213,20 @@ describe("Notes overload recovery support", () => {
         handler.onClose();
     });
 
-    it("suppresses late final sends after handler cleanup", async () => {
+    it("suppresses late final sends after handler cleanup while storing recoverable success", async () => {
         const socket = makeSocket();
-        const handler = new NotesHandler(socket as never, "test-notes-stale-final");
+        const store = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => "handler-recovery-stale",
+        });
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-stale-final",
+            { userId: "recovery-user", recordingSessionId: "recovery-recording" },
+            { finalisationRecoveryStore: store }
+        );
         await startNotes(handler, "## Current\n\n- Existing note.");
+        const recoveryId = messages(socket).find((msg) => msg.type === "started")?.finalisationRecoveryId;
+        expect(recoveryId).toBe("handler-recovery-stale");
         socket.send.mockClear();
 
         let resolveFinal!: (value: string) => void;
@@ -201,6 +244,64 @@ describe("Notes overload recovery support", () => {
         await stopPromise;
 
         expect(socket.send).not.toHaveBeenCalled();
+        expect(store.getForOwner({
+            recoveryId: recoveryId ?? "",
+            userId: "recovery-user",
+            recordingSessionId: "recovery-recording",
+        })).toMatchObject({
+            status: "succeeded",
+            notesMarkdown: "## Final\n\n- Late final note.",
+        });
+    });
+
+    it("stores fallback final notes as recoverable success when finalisation throws", async () => {
+        const socket = makeSocket();
+        const store = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => "handler-recovery-fallback",
+        });
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-recovery-fallback",
+            { userId: "recovery-user" },
+            { finalisationRecoveryStore: store }
+        );
+        const currentNotes = "## Current\n\n- Fallback note.";
+        await startNotes(handler, currentNotes);
+        const recoveryId = messages(socket).find((msg) => msg.type === "started")?.finalisationRecoveryId;
+        mockState.finalizeNotes.mockRejectedValueOnce(Object.assign(new Error("raw provider details"), {
+            code: "provider_error",
+        }));
+
+        await handler.onStop();
+
+        const final = messages(socket).find((msg) => msg.type === "notes_final");
+        expect(final?.notesMarkdown).toBe(currentNotes);
+        expect(store.getForOwner({
+            recoveryId: recoveryId ?? "",
+            userId: "recovery-user",
+        })).toMatchObject({
+            status: "succeeded",
+            notesMarkdown: currentNotes,
+        });
+    });
+
+    it("does not duplicate the finalisation recovery lifecycle on duplicate stop", async () => {
+        const socket = makeSocket();
+        const store = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => "handler-recovery-duplicate-stop",
+        });
+        const markPendingSpy = vi.spyOn(store, "markPending");
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-recovery-duplicate-stop",
+            { userId: "recovery-user" },
+            { finalisationRecoveryStore: store }
+        );
+        await startNotes(handler, "## Current\n\n- Existing note.");
+
+        await Promise.all([handler.onStop(), handler.onStop()]);
+
+        expect(markPendingSpy).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -235,7 +336,8 @@ describe("Notes cap continuity handler behaviour", () => {
         await vi.runOnlyPendingTimersAsync();
 
         const sent = messages(reconnectSocket);
-        expect(sent[0]).toEqual({ type: "started", mode: "notes" });
+        expect(sent[0]).toMatchObject({ type: "started", mode: "notes" });
+        expect(sent[0].finalisationRecoveryId).toEqual(expect.any(String));
         const final = sent.find((msg) => msg.type === "notes_final");
         expect(final?.notesMarkdown).toBe(currentMarkdown);
         expect(mockState.finalizeNotes).toHaveBeenCalledWith("", currentMarkdown, "meeting", ["Summary"]);
