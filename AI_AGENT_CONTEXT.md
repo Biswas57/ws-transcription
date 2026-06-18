@@ -310,6 +310,16 @@ T-135 is the backend half of cross-repo T-186. Keep normal WebSocket `notes_fina
 - Guard recovery by owner/session. Mismatches should return safe `not_found`-style semantics and must not log raw user IDs or recovery/session IDs.
 - Summarise/Reorganise should continue to use existing async transform jobs unless proven insufficient; T-135 is mainly for missed `notes_final` recovery.
 
+### Active Notes Recording Interruption Recovery
+
+T-188 covers mobile/background disconnects while Notes recording is still active and before Stop/finalisation begins. It is resume-first active recording recovery, not auto-finalisation.
+
+- Authenticated Notes sessions with a signed `recordingSessionId` may snapshot accepted text state for the same short window used by Notes cap reconnect continuity.
+- The snapshot may include current notes, accepted transcript, pending revised transcript, safe counts, and the finalisation recovery ID. Do not store raw audio, prompts, provider output, secrets, or raw logs.
+- Quick reconnect / Resume should reuse the same backend-signed `recordingSessionId`; Start New Recording should mint a fresh one.
+- Reconnect claims interrupted state once, restores accepted text, and then normal recording or Stop/finalisation paths continue.
+- V1 does not auto-finalise after expiry. Expired interrupted state is discarded safely; T-135 still handles recovery after Stop/finalisation starts or completes.
+
 ### Handler Lifecycle And Backpressure
 
 - Forms and Notes handlers guard against closed/stale async continuations.

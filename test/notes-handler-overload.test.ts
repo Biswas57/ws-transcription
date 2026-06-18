@@ -5,6 +5,10 @@ import {
     getNotesCapWindowForTest,
 } from "../notes-cap-registry.js";
 import { NotesFinalisationRecoveryStore } from "../notes-finalisation-recovery.js";
+import {
+    defaultNotesActiveInterruptionRecoveryStore,
+    NotesActiveInterruptionRecoveryStore,
+} from "../notes-active-interruption-recovery.js";
 
 const LONG_TRANSCRIPT = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
 
@@ -61,6 +65,7 @@ function messages(socket: MockSocket): Array<{
     message?: string;
     notesMarkdown?: string;
     finalisationRecoveryId?: string;
+    activeRecordingRecovery?: "resumed" | "expired" | "not_found";
 }> {
     return socket.send.mock.calls.map(([payload]) => JSON.parse(String(payload)));
 }
@@ -96,6 +101,7 @@ function deferredBatch(): {
 
 beforeEach(() => {
     clearNotesCapWindowsForTest();
+    defaultNotesActiveInterruptionRecoveryStore.clearForTest();
     mockState.transcribeAudioBatch.mockReset();
     mockState.reviseTranscription.mockReset();
     mockState.generateNotesIncrementalPatch.mockReset();
@@ -113,6 +119,7 @@ beforeEach(() => {
 
 afterEach(() => {
     clearNotesCapWindowsForTest();
+    defaultNotesActiveInterruptionRecoveryStore.clearForTest();
     vi.restoreAllMocks();
     vi.useRealTimers();
 });
@@ -146,6 +153,117 @@ describe("Notes overload recovery support", () => {
         expect(messages(unauthenticatedSocket).find((msg) => msg.type === "started")).toEqual({
             type: "started",
             mode: "notes",
+        });
+    });
+
+    it("restores accepted text state after an active recording interruption", async () => {
+        const activeStore = new NotesActiveInterruptionRecoveryStore();
+        const finalStore = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => "handler-final-recovery-active",
+        });
+        const userId = "active-recovery-user";
+        const recordingSessionId = "active-recovery-recording";
+
+        const firstSocket = makeSocket();
+        const firstHandler = new NotesHandler(
+            firstSocket as never,
+            "test-notes-active-a",
+            { userId, recordingSessionId },
+            {
+                activeInterruptionRecoveryStore: activeStore,
+                finalisationRecoveryStore: finalStore,
+            }
+        );
+        await startNotes(firstHandler, "## Old frontend notes\n\n- Existing.");
+        await sendChunks(firstHandler, 3);
+        await vi.waitFor(() => expect(mockState.reviseTranscription).toHaveBeenCalledTimes(1));
+
+        firstHandler.onClose();
+        expect(activeStore.getForTest(userId, recordingSessionId)).toMatchObject({
+            snapshot: {
+                transcript: LONG_TRANSCRIPT,
+                pendingNotesTranscript: LONG_TRANSCRIPT,
+                finalisationRecoveryId: "handler-final-recovery-active",
+            },
+        });
+
+        const secondSocket = makeSocket();
+        const secondHandler = new NotesHandler(
+            secondSocket as never,
+            "test-notes-active-b",
+            { userId, recordingSessionId },
+            {
+                activeInterruptionRecoveryStore: activeStore,
+                finalisationRecoveryStore: finalStore,
+            }
+        );
+        const frontendCurrentNotes = "## Frontend draft\n\n- User-visible notes win.";
+        await startNotes(secondHandler, frontendCurrentNotes);
+
+        expect(messages(secondSocket).find((msg) => msg.type === "started")).toMatchObject({
+            type: "started",
+            mode: "notes",
+            finalisationRecoveryId: "handler-final-recovery-active",
+            activeRecordingRecovery: "resumed",
+        });
+
+        await secondHandler.onStop();
+
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledWith(
+            LONG_TRANSCRIPT,
+            frontendCurrentNotes,
+            "meeting",
+            ["Summary"],
+        );
+        expect(mockState.finalizeNotes).toHaveBeenCalledWith(
+            LONG_TRANSCRIPT,
+            frontendCurrentNotes,
+            "meeting",
+            ["Summary"],
+        );
+        expect(activeStore.claim({
+            userId,
+            recordingSessionId,
+            backendSessionId: "test-notes-active-c",
+        })).toEqual({ status: "not_found" });
+    });
+
+    it("does not expose active recording recovery without a signed recording session", async () => {
+        const activeStore = new NotesActiveInterruptionRecoveryStore();
+        let recoveryId = 0;
+        const finalStore = new NotesFinalisationRecoveryStore({
+            createRecoveryId: () => `handler-final-recovery-no-session-${++recoveryId}`,
+        });
+
+        const firstSocket = makeSocket();
+        const firstHandler = new NotesHandler(
+            firstSocket as never,
+            "test-notes-active-no-session-a",
+            { userId: "active-recovery-user" },
+            {
+                activeInterruptionRecoveryStore: activeStore,
+                finalisationRecoveryStore: finalStore,
+            }
+        );
+        await startNotes(firstHandler, "## Draft");
+        firstHandler.onClose();
+
+        const secondSocket = makeSocket();
+        const secondHandler = new NotesHandler(
+            secondSocket as never,
+            "test-notes-active-no-session-b",
+            { userId: "active-recovery-user" },
+            {
+                activeInterruptionRecoveryStore: activeStore,
+                finalisationRecoveryStore: finalStore,
+            }
+        );
+        await startNotes(secondHandler, "## Draft");
+
+        expect(messages(secondSocket).find((msg) => msg.type === "started")).toEqual({
+            type: "started",
+            mode: "notes",
+            finalisationRecoveryId: "handler-final-recovery-no-session-2",
         });
     });
 

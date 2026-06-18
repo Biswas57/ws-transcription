@@ -131,6 +131,15 @@ audio batch
 - Owner/session mismatches should return safe `not_found`-style semantics so record existence is not exposed.
 - Summarise/Reorganise recovery should prefer the existing async transform job routes unless those prove insufficient. Backend T-135 is primarily for missed WebSocket `notes_final` recovery.
 
+### Active Notes Recording Interruption Recovery
+
+- T-188 covers mobile/background disconnects while Notes recording is still active, before Stop/finalisation begins.
+- Authenticated Notes sessions with a signed `recordingSessionId` may preserve accepted text state for the same short reconnect window used by Notes cap continuity.
+- Preserved state is in-memory only: current notes, accepted transcript, pending revised transcript, safe counts, and the finalisation recovery ID. Raw audio, prompts, provider output, secrets, and raw logs are not stored.
+- Quick reconnect / Resume should reuse the same backend-signed `recordingSessionId`; Start New Recording should mint a fresh one.
+- Reconnect claims the interrupted state once, restores accepted text, and lets the user continue recording or send normal Stop. V1 does not auto-finalise on expiry.
+- T-135 remains the recovery path after Stop/finalisation starts or completes; T-188 is only for active interruptions before Stop.
+
 ### Notes Transform Source Of Truth
 
 - Notes post-processing actions should operate on the current visible notes markdown supplied by `formify-web`.

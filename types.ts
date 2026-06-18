@@ -61,6 +61,7 @@ export interface StartedMessage {
     type: "started";
     mode: "forms" | "notes";
     finalisationRecoveryId?: string;
+    activeRecordingRecovery?: "resumed" | "expired" | "not_found";
 }
 
 export interface AttributesUpdateMessage {

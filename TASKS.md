@@ -35,6 +35,7 @@ Use this file as the working ticket list for future AI-agent turns. Work on only
 | T-123–T-126 Runtime architecture stabilisation | Completed | P1, backend architecture. Removed experiment flags, centralised `GPT_FLOW_CONFIG`, separated eval-only scaffolding, and documented stable runtime behaviour. |
 | T-127–T-134 Backend cleanup and documentation compaction | Completed | P2/P3, backend cleanup. Removed repo bloat, hardened diagnostics/parsers, reviewed GPT boundaries, compacted tickets, and archived detailed history. |
 | T-135 Add short-window Notes finalisation recovery | Completed | P1/P2, backend reliability. Added short-lived app-owned recovery for completed Notes finalisation results with owner/session guards and safe metadata-only diagnostics. |
+| T-188 Active Notes recording interruption recovery | Completed | P1/P2, backend reliability. Added short-lived app-owned recovery for accepted Notes text state when mobile/background disconnects happen before Stop; reconnect with the same signed recording session can resume or finalise captured content. |
 
 ## Cross-Repo References
 

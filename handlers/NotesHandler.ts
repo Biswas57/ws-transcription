@@ -28,6 +28,12 @@ import {
     defaultNotesFinalisationRecoveryStore,
     type NotesFinalisationRecoveryStore,
 } from "../notes-finalisation-recovery.js";
+import {
+    defaultNotesActiveInterruptionRecoveryStore,
+    type NotesActiveInterruptionClaimResult,
+    type NotesActiveInterruptionRecoveryStore,
+    type NotesActiveInterruptionSnapshot,
+} from "../notes-active-interruption-recovery.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
 //
@@ -58,6 +64,7 @@ type NotesHandlerAuthContext = {
 
 type NotesHandlerDeps = {
     finalisationRecoveryStore?: NotesFinalisationRecoveryStore;
+    activeInterruptionRecoveryStore?: NotesActiveInterruptionRecoveryStore;
 };
 
 const NOTES_UPDATE_PHASES: NotesUpdatePhase[] = [
@@ -74,6 +81,13 @@ function getNotesPhase(elapsedMs: number): NotesUpdatePhase {
 function countWords(text: string): number {
     const trimmed = text.trim();
     return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length;
+}
+
+function joinNotesBatches(...batches: string[]): string {
+    return batches
+        .map((batch) => batch.trim())
+        .filter((batch) => batch.length > 0)
+        .join("\n\n");
 }
 
 export class NotesHandler implements TranscriptionHandler {
@@ -97,6 +111,7 @@ export class NotesHandler implements TranscriptionHandler {
     private pendingNotesTranscript = "";
     private notesUpdateInFlight = false;
     private notesUpdatePromise: Promise<void> | null = null;
+    private notesUpdateActiveBatch = "";
     private lastNotesUpdateAt = 0;
     private isStopping = false;
     private sessionCapTimer: NodeJS.Timeout | null = null;
@@ -108,6 +123,8 @@ export class NotesHandler implements TranscriptionHandler {
     private finalisationRecoveryId: string | null = null;
     private finalisationRecoveryEnabled = false;
     private finalisationRecoveryStore: NotesFinalisationRecoveryStore;
+    private activeInterruptionRecoveryStore: NotesActiveInterruptionRecoveryStore;
+    private activeRecordingRecoveryStatus: "resumed" | "expired" | "not_found" | null = null;
 
     constructor(
         private socket: WebSocket,
@@ -117,6 +134,8 @@ export class NotesHandler implements TranscriptionHandler {
     ) {
         this.finalisationRecoveryStore =
             deps.finalisationRecoveryStore ?? defaultNotesFinalisationRecoveryStore;
+        this.activeInterruptionRecoveryStore =
+            deps.activeInterruptionRecoveryStore ?? defaultNotesActiveInterruptionRecoveryStore;
         this.st = {
             ...makeAudioState(),
             noteStyle: "general",
@@ -160,11 +179,26 @@ export class NotesHandler implements TranscriptionHandler {
         this.pendingNotesTranscript = "";
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
+        this.notesUpdateActiveBatch = "";
         this.isStopping = false;
         this.stopPromise = null;
         this.overloadSignaled = false;
         this.capWindowClosed = false;
-        this.reserveFinalisationRecovery();
+        this.finalisationRecoveryId = null;
+        this.finalisationRecoveryEnabled = false;
+        this.activeRecordingRecoveryStatus = null;
+
+        const activeInterruptionClaim = this.tryClaimActiveInterruption(
+            continuationRequested,
+            continuationMarkdown
+        );
+        if (activeInterruptionClaim) {
+            this.activeRecordingRecoveryStatus = activeInterruptionClaim.status;
+        }
+
+        if (!this.finalisationRecoveryId) {
+            this.reserveFinalisationRecovery();
+        }
         this.capWindow = this.authContext.userId
             ? resolveNotesCapWindow({
                 userId: this.authContext.userId,
@@ -186,6 +220,7 @@ export class NotesHandler implements TranscriptionHandler {
             `seededNotesChars: ${this.st.currentMarkdown.length}, ` +
             `canonicalNotesChars: ${this.st.currentMarkdown.length}, ` +
             `truncatedForCanonical: false, ` +
+            `activeRecordingRecovery: ${this.activeRecordingRecoveryStatus ?? "not-attempted"}, ` +
             `capWindow: ${this.capWindow !== null}, ` +
             `capWindowReused: ${this.capWindow?.capWindowReused ?? false}`
         );
@@ -199,11 +234,22 @@ export class NotesHandler implements TranscriptionHandler {
             capWindow: this.capWindow !== null,
             capWindowReused: this.capWindow?.capWindowReused ?? false,
             finalisationRecovery: this.finalisationRecoveryEnabled,
+            activeRecordingRecovery: this.activeRecordingRecoveryStatus ?? "not-attempted",
         });
 
-        this.send(this.finalisationRecoveryId
-            ? { type: "started", mode: "notes", finalisationRecoveryId: this.finalisationRecoveryId }
-            : { type: "started", mode: "notes" });
+        const startedMessage: {
+            type: "started";
+            mode: "notes";
+            finalisationRecoveryId?: string;
+            activeRecordingRecovery?: "resumed" | "expired" | "not_found";
+        } = { type: "started", mode: "notes" };
+        if (this.finalisationRecoveryId) {
+            startedMessage.finalisationRecoveryId = this.finalisationRecoveryId;
+        }
+        if (this.activeRecordingRecoveryStatus) {
+            startedMessage.activeRecordingRecovery = this.activeRecordingRecoveryStatus;
+        }
+        this.send(startedMessage);
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
@@ -600,6 +646,11 @@ export class NotesHandler implements TranscriptionHandler {
     onClose(): void {
         if (this.closed) return;
         const closeCapWindow = this.isStopping;
+        const interruptionSnapshot = closeCapWindow
+            ? null
+            : this.buildActiveInterruptionSnapshot();
+        const queueSizeAtClose = this.queue.size;
+        const queuePendingAtClose = this.queue.pending;
         this.closed = true;
         this.clearSessionCapTimer();
         // Stop any future scheduling: an in-flight update's finally-block
@@ -608,11 +659,13 @@ export class NotesHandler implements TranscriptionHandler {
         this.queue.clear();
         // Clear pending buffer so a stale update can't fire on a closed socket.
         this.pendingNotesTranscript = "";
+        this.notesUpdateActiveBatch = "";
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
         if (closeCapWindow) {
             this.closeCapWindow();
         } else {
+            this.saveActiveInterruptionSnapshot(interruptionSnapshot, queueSizeAtClose, queuePendingAtClose);
             this.markCapWindowReconnectable();
         }
         console.log(`[${this.sessionId}][notes] Handler closed`);
@@ -730,6 +783,7 @@ export class NotesHandler implements TranscriptionHandler {
         // (empty) buffer and will be picked up by the follow-up check.
         const batch = this.pendingNotesTranscript;
         this.pendingNotesTranscript = "";
+        this.notesUpdateActiveBatch = batch;
         this.notesUpdateInFlight = true;
 
         const updateStart = Date.now();
@@ -793,6 +847,7 @@ export class NotesHandler implements TranscriptionHandler {
                 );
                 if (!this.closed) this.restorePendingNotesBatch(batch);
             } finally {
+                this.notesUpdateActiveBatch = "";
                 this.notesUpdateInFlight = false;
                 this.notesUpdatePromise = null;
                 // One follow-up check: if enough transcript accumulated while
@@ -850,6 +905,94 @@ export class NotesHandler implements TranscriptionHandler {
             incomingChunkBytes,
             overloadSignaled: this.overloadSignaled,
         });
+    }
+
+    private tryClaimActiveInterruption(
+        continuationRequested: boolean,
+        continuationMarkdown: string
+    ): NotesActiveInterruptionClaimResult | null {
+        if (!continuationRequested) return null;
+        if (!this.authContext.userId || !this.authContext.recordingSessionId) return null;
+
+        const claim = this.activeInterruptionRecoveryStore.claim({
+            userId: this.authContext.userId,
+            recordingSessionId: this.authContext.recordingSessionId,
+            backendSessionId: this.sessionId,
+        });
+
+        if (claim.status === "resumed") {
+            this.restoreActiveInterruptionSnapshot(claim.snapshot, continuationMarkdown);
+        }
+
+        return claim;
+    }
+
+    private restoreActiveInterruptionSnapshot(
+        snapshot: NotesActiveInterruptionSnapshot,
+        continuationMarkdown: string
+    ): void {
+        this.st.noteStyle = snapshot.noteStyle;
+        this.st.sections = [...snapshot.sections];
+        this.st.currentMarkdown = continuationMarkdown.trim().length > 0
+            ? continuationMarkdown
+            : snapshot.currentMarkdown;
+        this.st.transcript = snapshot.transcript;
+        this.st.currTranscriptSize = snapshot.currTranscriptSize;
+        this.pendingNotesTranscript = snapshot.pendingNotesTranscript;
+        this.passCount = snapshot.passCount;
+        this.sessionStartedAt = snapshot.sessionStartedAt;
+        this.lastNotesUpdateAt = snapshot.lastNotesUpdateAt;
+
+        if (snapshot.finalisationRecoveryId) {
+            this.finalisationRecoveryId = snapshot.finalisationRecoveryId;
+            this.finalisationRecoveryEnabled = true;
+        }
+    }
+
+    private buildActiveInterruptionSnapshot(): NotesActiveInterruptionSnapshot {
+        return {
+            noteStyle: this.st.noteStyle,
+            sections: [...this.st.sections],
+            currentMarkdown: this.st.currentMarkdown,
+            transcript: this.st.transcript,
+            currTranscriptSize: this.st.currTranscriptSize,
+            pendingNotesTranscript: joinNotesBatches(
+                this.notesUpdateActiveBatch,
+                this.pendingNotesTranscript
+            ),
+            passCount: this.passCount,
+            sessionStartedAt: this.sessionStartedAt,
+            lastNotesUpdateAt: this.lastNotesUpdateAt,
+            finalisationRecoveryId: this.finalisationRecoveryId,
+        };
+    }
+
+    private saveActiveInterruptionSnapshot(
+        snapshot: NotesActiveInterruptionSnapshot | null,
+        queueSize: number,
+        queuePending: number
+    ): void {
+        if (!snapshot) return;
+        if (!this.authContext.userId || !this.authContext.recordingSessionId) return;
+
+        try {
+            this.activeInterruptionRecoveryStore.save({
+                userId: this.authContext.userId,
+                recordingSessionId: this.authContext.recordingSessionId,
+                backendSessionId: this.sessionId,
+                snapshot,
+                queueSize,
+                queuePending,
+            });
+        } catch (err) {
+            console.warn(
+                `[${this.sessionId}][notes] Active interruption recovery unavailable — ${safeErrorInfo(err)}`
+            );
+            recordUsageEvent("notes_active_interruption_unavailable", {
+                mode: "notes",
+                reason: "save-failed",
+            });
+        }
     }
 
     private reserveFinalisationRecovery(): void {
