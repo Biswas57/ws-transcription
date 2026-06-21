@@ -166,10 +166,10 @@ export class NotesHandler implements TranscriptionHandler {
             : [];
         const continuationRequested = payload.continuation === true;
         const providedNotesChars = typeof payload.currentNotesMarkdown === "string" ? payload.currentNotesMarkdown.length : 0;
-        const continuationMarkdown = continuationRequested && typeof payload.currentNotesMarkdown === "string"
+        const providedNotesMarkdown = typeof payload.currentNotesMarkdown === "string"
             ? payload.currentNotesMarkdown.trim()
             : "";
-        this.st.currentMarkdown = continuationMarkdown;
+        this.st.currentMarkdown = providedNotesMarkdown;
         this.passCount = 0;
         this.sessionStartedAt = Date.now();
         // Seed lastNotesUpdateAt to session start so the AND-logic time gate
@@ -190,7 +190,7 @@ export class NotesHandler implements TranscriptionHandler {
 
         const activeInterruptionClaim = this.tryClaimActiveInterruption(
             continuationRequested,
-            continuationMarkdown
+            providedNotesMarkdown
         );
         if (activeInterruptionClaim) {
             this.activeRecordingRecoveryStatus = activeInterruptionClaim.status;

@@ -82,6 +82,23 @@ async function startNotes(handler: NotesHandler, currentNotesMarkdown?: string):
     });
 }
 
+async function startNotesWithPayload(
+    handler: NotesHandler,
+    payload: {
+        currentNotesMarkdown?: string;
+        continuation?: boolean;
+    }
+): Promise<void> {
+    await handler.onStart({
+        action: "start",
+        mode: "notes",
+        token: "test-token",
+        noteStyle: "meeting",
+        sections: ["Summary"],
+        ...payload,
+    });
+}
+
 async function sendChunks(handler: NotesHandler, count: number, offset = 0): Promise<void> {
     for (let i = 0; i < count; i++) {
         await handler.onAudioChunk(Buffer.from([0x1a, 0x45, 0xdf, 0xa3, (offset + i) & 0xff]));
@@ -327,6 +344,96 @@ describe("Notes overload recovery support", () => {
 
         const final = messages(socket).find((msg) => msg.type === "notes_final");
         expect(final?.notesMarkdown).toBe(largeMarkdown);
+
+        handler.onClose();
+    });
+
+    it("seeds current notes for a fresh segment without active recovery continuation", async () => {
+        const socket = makeSocket();
+        const handler = new NotesHandler(socket as never, "test-notes-fresh-context");
+        const currentMarkdown = "## Previous final notes\n\n- Keep this as context.";
+
+        await startNotesWithPayload(handler, {
+            continuation: false,
+            currentNotesMarkdown: currentMarkdown,
+        });
+        await handler.onStop();
+
+        const started = messages(socket).find((msg) => msg.type === "started");
+        expect(started).toEqual({ type: "started", mode: "notes" });
+        expect(mockState.finalizeNotes).toHaveBeenCalledWith(
+            "",
+            currentMarkdown,
+            "meeting",
+            ["Summary"],
+        );
+
+        const final = messages(socket).find((msg) => msg.type === "notes_final");
+        expect(final?.notesMarkdown).toBe(currentMarkdown);
+
+        handler.onClose();
+    });
+
+    it("does not claim active interruption state when current notes are provided without continuation", async () => {
+        const activeStore = new NotesActiveInterruptionRecoveryStore();
+        const userId = "fresh-context-user";
+        const recordingSessionId = "fresh-context-recording";
+        const firstSocket = makeSocket();
+        const firstHandler = new NotesHandler(
+            firstSocket as never,
+            "test-notes-fresh-context-a",
+            { userId, recordingSessionId },
+            { activeInterruptionRecoveryStore: activeStore }
+        );
+        await startNotes(firstHandler, "## Snapshot notes");
+        await sendChunks(firstHandler, 3);
+        await vi.waitFor(() => expect(mockState.reviseTranscription).toHaveBeenCalledTimes(1));
+        firstHandler.onClose();
+        expect(activeStore.getForTest(userId, recordingSessionId)).not.toBeNull();
+
+        const secondSocket = makeSocket();
+        const secondHandler = new NotesHandler(
+            secondSocket as never,
+            "test-notes-fresh-context-b",
+            { userId, recordingSessionId },
+            { activeInterruptionRecoveryStore: activeStore }
+        );
+        const frontendContext = "## Frontend context\n\n- Fresh segment should use this only.";
+        await startNotesWithPayload(secondHandler, {
+            continuation: false,
+            currentNotesMarkdown: frontendContext,
+        });
+        await secondHandler.onStop();
+
+        expect(messages(secondSocket).find((msg) => msg.type === "started")).toMatchObject({
+            type: "started",
+            mode: "notes",
+        });
+        expect(messages(secondSocket).find((msg) => msg.type === "started")?.activeRecordingRecovery).toBeUndefined();
+        expect(mockState.finalizeNotes).toHaveBeenLastCalledWith(
+            "",
+            frontendContext,
+            "meeting",
+            ["Summary"],
+        );
+        expect(activeStore.getForTest(userId, recordingSessionId)).not.toBeNull();
+
+        secondHandler.onClose();
+    });
+
+    it("starts blank when no current notes markdown is provided", async () => {
+        const socket = makeSocket();
+        const handler = new NotesHandler(socket as never, "test-notes-blank-context");
+
+        await startNotesWithPayload(handler, { continuation: false });
+        await handler.onStop();
+
+        expect(mockState.finalizeNotes).toHaveBeenCalledWith(
+            "",
+            "",
+            "meeting",
+            ["Summary"],
+        );
 
         handler.onClose();
     });

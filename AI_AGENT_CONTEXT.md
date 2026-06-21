@@ -293,7 +293,7 @@ After Stop:
 
 Do not drain stale incremental GPT backlog.
 
-Continuation uses `continuation: true` and `currentNotesMarkdown`. The backend seeds from supplied current notes markdown; the old full transcript is not required.
+`currentNotesMarkdown` seeds canonical Notes context whenever supplied, including fresh recording segments with `continuation: false`. `continuation: true` is reserved for same signed-session active recovery/reconnect semantics; the old full transcript is not required for normal Notes context seeding.
 
 VAD modes are `off`, `dry-run`, and `gate`. VAD defaults to `off`, fails open to Whisper, is intended for Notes gate behaviour only, does not gate Forms, must never skip stop flush, and logs safe metadata only.
 
@@ -316,7 +316,7 @@ T-188 covers mobile/background disconnects while Notes recording is still active
 
 - Authenticated Notes sessions with a signed `recordingSessionId` may snapshot accepted text state for the same short window used by Notes cap reconnect continuity.
 - The snapshot may include current notes, accepted transcript, pending revised transcript, safe counts, and the finalisation recovery ID. Do not store raw audio, prompts, provider output, secrets, or raw logs.
-- Quick reconnect / Resume should reuse the same backend-signed `recordingSessionId`; Start New Recording should mint a fresh one.
+- Quick reconnect / Resume should reuse the same backend-signed `recordingSessionId` with `continuation: true`; Start New Recording should mint a fresh one and may still provide `currentNotesMarkdown` as context with `continuation: false`.
 - Reconnect claims interrupted state once, restores accepted text, and then normal recording or Stop/finalisation paths continue.
 - V1 does not auto-finalise after expiry. Expired interrupted state is discarded safely; T-135 still handles recovery after Stop/finalisation starts or completes.
 
