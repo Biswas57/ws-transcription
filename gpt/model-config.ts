@@ -5,43 +5,93 @@ dotenv.config();
 
 export const GPT_REQUEST_TIMEOUT_MS = Number(process.env.GPT_REQUEST_TIMEOUT_MS ?? 120_000);
 
-export const GPT_FLOW_CONFIG = {
-    revision: {
-        api: "responses",
-        model: "gpt-5.4-mini",
-        reasoning: "none",
+export const GPT_FLOW_PROFILES = {
+    "gpt-5.4": {
+        revision: {
+            api: "responses",
+            model: "gpt-5.4-mini",
+            reasoning: "none",
+        },
+        formsLive: {
+            api: "chat",
+            model: "gpt-5.4-mini",
+            reasoning: "low",
+        },
+        notesLive: {
+            api: "responses",
+            model: "gpt-5.4-mini",
+            reasoning: "low",
+        },
+        formsFinal: {
+            api: "responses",
+            model: "gpt-5.4",
+            reasoning: "medium",
+        },
+        notesFinal: {
+            api: "responses",
+            model: "gpt-5.4",
+            reasoning: "medium",
+        },
+        summarise: {
+            api: "responses",
+            model: "gpt-5.4",
+            reasoning: "medium",
+        },
+        reorganise: {
+            api: "responses",
+            model: "gpt-5.4",
+            reasoning: "low",
+        },
     },
-    formsLive: {
-        api: "chat",
-        model: "gpt-5.4-mini",
-        reasoning: "low",
-    },
-    notesLive: {
-        api: "responses",
-        model: "gpt-5.4-mini",
-        reasoning: "low",
-    },
-    formsFinal: {
-        api: "responses",
-        model: "gpt-5.4",
-        reasoning: "medium",
-    },
-    notesFinal: {
-        api: "responses",
-        model: "gpt-5.4",
-        reasoning: "medium",
-    },
-    summarise: {
-        api: "responses",
-        model: "gpt-5.4",
-        reasoning: "medium",
-    },
-    reorganise: {
-        api: "responses",
-        model: "gpt-5.4",
-        reasoning: "low",
+    "gpt-5.6": {
+        revision: {
+            api: "responses",
+            model: "gpt-5.6-luna",
+            reasoning: "none",
+        },
+        formsLive: {
+            api: "chat",
+            model: "gpt-5.6-luna",
+            reasoning: "low",
+        },
+        notesLive: {
+            api: "responses",
+            model: "gpt-5.6-luna",
+            reasoning: "low",
+        },
+        formsFinal: {
+            api: "responses",
+            model: "gpt-5.6-terra",
+            reasoning: "medium",
+        },
+        notesFinal: {
+            api: "responses",
+            model: "gpt-5.6-terra",
+            reasoning: "medium",
+        },
+        summarise: {
+            api: "responses",
+            model: "gpt-5.6-terra",
+            reasoning: "medium",
+        },
+        reorganise: {
+            api: "responses",
+            model: "gpt-5.6-luna",
+            reasoning: "low",
+        },
     },
 } as const;
+
+export type GPTModelProfileName = keyof typeof GPT_FLOW_PROFILES;
+
+export function resolveGPTModelProfile(value = process.env.GPT_MODEL_PROFILE): GPTModelProfileName {
+    if (value === undefined || value === "" || value === "gpt-5.6") return "gpt-5.6";
+    if (value === "gpt-5.4") return "gpt-5.4";
+    throw new Error("GPT_MODEL_PROFILE must be either gpt-5.6 or gpt-5.4");
+}
+
+export const GPT_MODEL_PROFILE = resolveGPTModelProfile();
+export const GPT_FLOW_CONFIG = GPT_FLOW_PROFILES[GPT_MODEL_PROFILE];
 
 export const DEFAULT_REVISION_MIN_CHARS = 15;
 export const NOTES_REVISION_MIN_CHARS = 40;

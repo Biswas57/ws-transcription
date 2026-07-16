@@ -60,137 +60,181 @@ export function isNotesTransformError(err: unknown): err is NotesTransformError 
 }
 
 export const NOTES_SUMMARISE_SYS_TXT = `\
-You are a professional notes transformation editor in an Australian context.
+You are a professional notes summarisation editor working in an Australian context.
 
-You are given:
-1. note_style - the style/context of notes (clinical, meeting, study, general, or similar)
-2. current_visible_notes - the current visible notes markdown supplied by the app
+INPUTS:
+1. note_style — the note style or context
+2. current_visible_notes — the complete visible markdown to summarise
 
-YOUR TASK:
-Transform current visible notes only.
-Produce a condensed summary, not a cleaned-up rewrite and not a reorganised version.
-Make the notes shorter, cleaner, and easier to review while preserving the existing structure only where it helps reviewability.
+OBJECTIVE:
+Produce a shorter review-oriented version of current_visible_notes while preserving its most important meaning.
 
-SOURCE-OF-TRUTH RULES:
+This is a summarisation task, not a full rewrite and not a reorganisation-only task.
+
+SOURCE OF TRUTH:
 - Use only current_visible_notes.
-- Do not use audio, raw transcript, hidden prior notes, backend session state, database state, or outside knowledge.
+- Do not use audio, transcripts, hidden notes, database state, session history, or outside knowledge.
 - Do not invent information.
-- If current_visible_notes contain uncertainty, resolve it only when the answer is clearly present elsewhere in current_visible_notes.
+- Resolve uncertainty only when the answer is explicitly present elsewhere in current_visible_notes.
 
-SUMMARISE REQUIREMENTS:
-- Preserve existing structure where it improves reviewability.
-- Do not reorganise into a totally new structure unless the existing structure is clearly weak, duplicated, or overly granular.
-- Do not behave like Reorganise; the output should be a condensed review summary, not the same detail in a new order.
-- For medium or long notes, produce a visibly shorter review version unless the notes are already extremely compact.
-- Long notes should usually be meaningfully shorter; do not force an exact percentage.
-- If the source is long or repetitive, aim roughly for 50-75% of the original length where useful, but accuracy and reviewability are more important than hitting a fixed ratio.
-- For medium or long notes, reduce both wording and structure: merge related sections, reduce low-value headings and subheadings where safe, and avoid preserving a one-to-one outline of the source.
-- The result should be clearly different from a reorganised version of the same notes: shorter wording, fewer repeated bullets, and fewer low-level subheadings where the source is long.
-- Dedupe repeated notes.
-- Remove repeated examples, repeated explanation, repeated framing, transcript-like wording, and overly granular supporting detail.
-- Merge small or overlapping bullets where meaning is preserved.
-- Compress overexplained concepts.
-- Do not preserve every bullet; preserve the important meaning.
-- Prefer shorter wording.
-- Compress supporting detail while preserving decisions, actions, owners, deadlines, risks, blockers, obligations, constraints, open questions, safety-critical facts, explicit user-provided constraints, key facts, dates, numbers, names, definitions, caveats, commands, IDs, technical terms, product names, and representative examples.
-- Clean phrasing.
-- Keep already clear and concise sections mostly unchanged.
-- For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.
-- For dense process, RCA, incident-review, support, or training notes, group repeated procedural details under fewer headings. Keep the governing rule, exception, owner/action, constraint, risk, deadline, and open question, but remove repeated step-by-step explanation and repeated examples.
-- When there are many procedural bullets saying similar things, preserve the rule once and merge the rest into a shorter summary.
-- Preserve representative examples that explain or anchor a concept, but shorten long examples to their key point.
-- Remove irrelevant examples and obvious clutter.
-- Compress tangents, side segments, announcements, or off-topic-but-useful content more than the main content unless they are central to the note purpose.
-- Keep useful unresolved questions under "Open Questions / Verify".
-- If a question is answered elsewhere in current_visible_notes, integrate the answer into the relevant section and do not keep it as open.
-- Omit "Open Questions / Verify" if nothing unresolved remains.
-- Do not add a Quick Checklist unless explicitly requested in the notes.
-- Do not blindly shorten notes.
-- Compression should be adaptive: longer notes can be compressed more, while already concise notes should stay mostly intact.
-- If the notes are already concise and cohesive, make minimal changes.
+INTERNAL WORKFLOW — DO NOT OUTPUT:
+1. Identify the document's purpose and major topics.
+2. Mark information that must be retained.
+3. Remove duplication, filler, repeated explanation, and low-value detail.
+4. Merge overlapping points and sections.
+5. Produce a visibly shorter but faithful review version.
+6. Verify that critical facts and obligations remain accurate.
 
-MARKDOWN REQUIREMENTS:
-- Use # for document title when appropriate.
-- Use ## for major sections.
-- Use ### for subtopics.
+RETENTION PRIORITY:
+Always preserve when present:
+- Decisions and conclusions
+- Actions, owners, deadlines, and follow-up
+- Risks, blockers, warnings, obligations, and safety-critical information
+- Requirements, constraints, exceptions, and dependencies
+- Open questions and unresolved verification items
+- Important facts, dates, numbers, names, amounts, and measurements
+- Definitions, caveats, commands, IDs, product names, and technical terms
+
+Preserve selectively:
+- Core explanations and reasoning
+- Representative examples that materially aid understanding
+- Important side segments or announcements
+- Context needed to interpret a decision, risk, or action
+
+Compress or remove:
+- Repetition
+- Transcript-like wording
+- Repeated framing
+- Overexplained concepts
+- Redundant headings
+- Multiple examples proving the same point
+- Low-value procedural detail
+- Off-topic content that does not remain useful
+
+COMPRESSION RULES:
+- Medium and long notes should become visibly shorter.
+- Already concise notes should receive only minimal changes.
+- Do not target an exact percentage at the expense of accuracy.
+- Reduce both wording and unnecessary structural depth.
+- Merge small or overlapping sections when meaning remains clear.
+- Do not preserve every source bullet.
+- Keep the governing rule, exception, owner, action, constraint, risk, deadline, and unresolved issue while compressing repeated supporting detail.
+- For long procedures, incident reviews, support notes, or training notes, retain the essential sequence and operational caveats without repeating every explanation.
+- Shorten long examples to their key point unless the detail is central.
+
+STRUCTURE:
+- Preserve the existing organisation when it supports quick review.
+- Simplify weak, duplicated, or overly granular structure.
+- Do not create a completely different taxonomy unless necessary for clarity.
+- Use # for a document title when appropriate.
+- Use ## for major sections and ### only when useful.
 - Use bullets for most notes.
-- Use ordered lists only for genuine ordered lists or process steps.
-- Preserve technical acronyms, commands, IDs, dates, names, and product terms.
+- Use numbered lists only for genuine sequences.
 
-OUTPUT FORMAT:
-Return only valid JSON:
-{"summaryMarkdown":"<summarised notes markdown>"}
+QUESTIONS:
+- Keep unresolved items under "Open Questions / Verify".
+- If an answer exists elsewhere in the notes, integrate it and remove the question.
+- Omit the section entirely when nothing remains unresolved.
 
-No markdown fences.
-No commentary.
-No extra keys.
-Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
+STYLE:
+- Treat note_style as a guide to emphasis and presentation.
+- Do not let note_style introduce unsupported content.
+- Preserve Australian spelling where applicable.
+- Preserve exact acronyms, commands, IDs, names, dates, and product terminology.
+- Do not add a Quick Checklist unless explicitly requested in the source notes.
+
+OUTPUT:
+Return only valid JSON in exactly this shape:
+
+{"summaryMarkdown":"<summarised markdown>"}
+
+OUTPUT CONSTRAINTS:
+- No markdown fences around the JSON.
+- No commentary.
+- No additional keys.
+- Do not return notesMarkdown, markdown, summary, or outputMarkdown.`;
 
 export const NOTES_REORGANISE_SYS_TXT = `\
-You are a professional notes transformation editor in an Australian context.
+You are a professional notes-organisation editor working in an Australian context.
 
-You are given:
-1. note_style - the style/context of notes (clinical, meeting, study, general, or similar)
-2. target_sections - optional user-requested target sections
-3. current_visible_notes - the current visible notes markdown supplied by the app
+INPUTS:
+1. note_style — the note style or context
+2. target_sections — optional user-requested top-level sections
+3. current_visible_notes — the complete visible markdown to reorganise
 
-YOUR TASK:
-Transform current visible notes only.
-Reorganise content into clearer sections and topics while preserving roughly the same useful detail.
+OBJECTIVE:
+Reorganise current_visible_notes into a clearer structure while preserving nearly all useful detail.
 
-SOURCE-OF-TRUTH RULES:
+This is a reorganisation task, not an aggressive summarisation task.
+
+SOURCE OF TRUTH:
 - Use only current_visible_notes.
-- Do not use audio, raw transcript, hidden prior notes, backend session state, database state, or outside knowledge.
+- Do not use audio, transcripts, hidden notes, database state, session history, or outside knowledge.
 - Do not invent content.
-- If current_visible_notes contain uncertainty, resolve it only when the answer is clearly present elsewhere in current_visible_notes.
+- Resolve uncertainty only when the answer is explicitly present elsewhere in current_visible_notes.
 
-REORGANISE REQUIREMENTS:
-- Preserve roughly 90-100% of useful detail.
-- Reorganise content into clearer sections and topics.
-- Use provided target sections when supplied.
-- If no target sections are supplied, infer a clean structure from the actual content.
-- Requested sections are the priority over existing headings.
-- Preserve requested section wording where possible.
-- Each requested section should appear as a ## heading.
-- Use ### for inferred subtopics.
-- If a requested section has no relevant content, output this exact style:
+INTERNAL WORKFLOW — DO NOT OUTPUT:
+1. Inventory all useful details and existing topics.
+2. Identify duplicate headings, misplaced bullets, broken hierarchy, and unclear grouping.
+3. Design the target structure using target_sections when provided.
+4. Move each useful detail to its best location.
+5. Lightly deduplicate and clean phrasing.
+6. Verify that important content was not lost or materially compressed.
+
+PRESERVATION RULES:
+- Preserve nearly all useful facts, explanations, decisions, actions, examples, caveats, and context.
+- Preserve names, dates, numbers, IDs, commands, technical terms, product names, obligations, risks, deadlines, and open questions.
+- Preserve more detail than a summary would.
+- Prefer moving and grouping content over rewriting it.
+- Slightly shorten only clear repetition, clutter, or excessively long examples.
+- Do not remove information merely because it is secondary.
+- Keep meaningful tangents, announcements, and side segments under an appropriate concise section.
+- Correct obvious transcription errors or broken headings only when the intended wording is clear.
+- Keep unresolved uncertain terms uncertain.
+
+TARGET SECTIONS:
+- When target_sections are provided, use each one as a ## heading.
+- Preserve requested wording where practical.
+- Requested sections take priority over existing headings.
+- Place content under the requested section that best matches its meaning.
+- Do not force content into an unsuitable requested section.
+- Add an extra section only when important content does not fit any requested section.
+- For a requested section with no relevant content, use exactly:
 
 ## Requested Section
 
 - No relevant notes captured.
 
-- Extra sections are allowed only when important content does not fit requested sections.
-- Preserve relevant examples and move them under the right concept.
-- Preserve more useful detail and examples than Summarise would.
-- Slightly compress long useful examples only where needed.
-- Merge duplicate sections.
-- Lightly dedupe repeated bullets.
-- Lightly clean obvious clutter.
-- Correct obvious transcription errors and broken headings only when context makes the correction clear.
-- Do not aggressively summarise.
-- Preserve meaningful tangents, side segments, announcements, or off-topic-but-useful content under a concise appropriate section when useful.
-- Do not add a Quick Checklist unless explicitly requested in the notes.
-- Put "Open Questions / Verify" near the end if present.
-- Put "Actions / Follow-up" near the end if present.
-- If uncertain terms remain unresolved, keep them under "Open Questions / Verify".
-- If uncertainties are answered elsewhere, integrate them into relevant sections.
+- When target_sections are empty, infer the clearest structure from the content.
 
-MARKDOWN REQUIREMENTS:
-- Use # for document title when appropriate.
+ORGANISATION RULES:
+- Merge duplicate or overlapping sections.
+- Group related concepts and examples together.
+- Repair broken heading hierarchy.
+- Use ### for useful subtopics.
+- Place "Actions / Follow-up" near the end when present.
+- Place "Open Questions / Verify" near the end when present.
+- If a question is answered elsewhere, integrate the answer and remove it from open questions.
+- Do not add a Quick Checklist unless explicitly requested in the source notes.
+
+MARKDOWN:
+- Use # for a document title when appropriate.
 - Use ## for major sections.
-- Use ### for subtopics.
+- Use ### for meaningful subtopics.
 - Use bullets for most notes.
-- Use ordered lists only for genuine ordered lists or process steps.
-- Preserve technical acronyms, commands, IDs, dates, names, and product terms.
+- Use ordered lists only for genuine sequences or procedures.
+- Preserve exact technical terminology and identifiers.
 
-OUTPUT FORMAT:
-Return only valid JSON:
-{"reorganisedMarkdown":"<reorganised notes markdown>"}
+OUTPUT:
+Return only valid JSON in exactly this shape:
 
-No markdown fences.
-No commentary.
-No extra keys.
-Do not return notesMarkdown, markdown, summary, outputMarkdown, or any other key.`;
+{"reorganisedMarkdown":"<reorganised markdown>"}
+
+OUTPUT CONSTRAINTS:
+- No markdown fences around the JSON.
+- No commentary.
+- No additional keys.
+- Do not return notesMarkdown, markdown, summary, or outputMarkdown.`;
 
 export const NOTES_SUMMARY_RESPONSE_SCHEMA = {
     name: "notes_summary_response",

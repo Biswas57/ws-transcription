@@ -99,6 +99,7 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `VAD_MODE`: optional Notes VAD mode, one of `off`, `dry-run`, or `gate`; default is `off`.
 - `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
 - `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
+- `GPT_MODEL_PROFILE`: optional GPT workflow profile, either `gpt-5.6` (default) or `gpt-5.4` (rollback).
 - `NOTES_TRANSFORM_SECRET`: required for server-to-server Notes transform and finalisation recovery HTTP endpoints; callers send `Authorization: Bearer <secret>`.
 
 ## HTTP Notes Transform Contract
@@ -258,6 +259,15 @@ Possible error codes include auth/session errors such as `missing-token`, `inval
 7. Forms mode extracts attributes; notes mode updates Markdown notes.
 8. Server sends incremental updates.
 9. On `stop`, queued work drains, remaining audio is processed, and a final GPT pass runs.
+
+### GPT Runtime Architecture
+
+- The redesigned Revision, Forms live/final, Notes live/final, Summarise, and Reorganise prompts are the intended baseline.
+- `GPT_MODEL_PROFILE` selects one complete allowlisted matrix. The default `gpt-5.6` profile uses Luna/none for revision, Luna/low for Forms and Notes live, Terra/medium for Forms final, Notes final, and Summarise, and Luna/low for Reorganise.
+- Set `GPT_MODEL_PROFILE=gpt-5.4` for the complete previous matrix. API choices and fallback policies do not change between profiles.
+- Forms live remains Chat Completions. Notes live remains Responses-only with no Chat fallback. Audio transcription remains `whisper-1`.
+- The strict Notes-live no-update response is exactly `{"updates":[],"fallbackAppendMarkdown":""}`; failures still preserve canonical notes with a no-op patch.
+- Prefer direct model/prompt comparisons, focused tests, and configuration rollback over canary infrastructure or broad migration abstractions for this personal project.
 
 ### Forms Operating Invariants
 

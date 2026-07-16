@@ -5,6 +5,7 @@ import type { VadDecision } from "./audio/vad.js";
 import { safeErrorInfo } from "./safe-log.js";
 
 export const WHISPER_API_URL = "https://api.openai.com/v1/audio/transcriptions";
+export const WHISPER_MODEL = "whisper-1";
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY!;
 
 const MAX_RETRIES = 2;
@@ -48,7 +49,7 @@ export async function runWhisperOnBuffer(buffer: Buffer): Promise<string> {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         const whisperForm = new FormData();
         const blob = new Blob([new Uint8Array(buffer)], { type: "audio/webm" });
-        whisperForm.append("model", "whisper-1");
+        whisperForm.append("model", WHISPER_MODEL);
         whisperForm.set("file", blob, "audio.webm");
 
         const controller = new AbortController();

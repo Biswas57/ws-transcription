@@ -35,6 +35,8 @@ import {
 } from "../parse-gpt.js";
 import {
     GPT_FLOW_CONFIG,
+    GPT_FLOW_PROFILES,
+    GPT_MODEL_PROFILE,
 } from "../gpt/model-config.js";
 import { buildNotesLivePatchRequest } from "../gpt/notes-live.js";
 
@@ -122,11 +124,11 @@ describe("parse-gpt stabilisation", () => {
 
         expect(result).toEqual({ answer: "yes" });
         expect(openAiMock.create).toHaveBeenCalledTimes(1);
-        expect(openAiMock.create.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.create.mock.calls[0][0].model).toBe(GPT_FLOW_CONFIG.formsLive.model);
         expect(openAiMock.create.mock.calls[0][0].store).toBe(false);
         expect(openAiMock.create.mock.calls[0][0].reasoning_effort).toBe("low");
         const instructions = openAiMock.create.mock.calls[0][0].messages[0].content;
-        expect(instructions).toContain("Short values such as \"yes\", \"no\", names, dates, times, dollar amounts, phone numbers, and \"N/A\" can be complete valid answers");
+        expect(instructions).toContain("Short answers such as \"yes\", \"no\", \"N/A\", names, dates, times, amounts, identifiers, and phone numbers are valid");
         expectNoPromptExcludedLanguage(instructions);
     });
 
@@ -145,14 +147,14 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.formsFinal.model);
         expect(request.reasoning).toEqual({ effort: "medium" });
         expectJsonSchemaFormat(request, "forms_final_attributes_response", "finalAttributes");
         expect(request.text.format.schema.properties.finalAttributes.properties).toHaveProperty("answer");
         expect(request.text.format.schema.properties.finalAttributes.required).toEqual(["answer"]);
-        expect(request.instructions).toContain("Short values such as \"yes\", \"no\", names, dates, times, dollar amounts, phone numbers, and \"N/A\" can be complete valid answers");
-        expect(request.instructions).toContain("If the transcript clearly states that a field is not applicable, return \"N/A\".");
-        expect(request.instructions).toContain("If no information exists for a field, return an empty string.");
+        expect(request.instructions).toContain("Short answers such as \"yes\", \"no\", names, dates, times, amounts, identifiers, and phone numbers may be complete values.");
+        expect(request.instructions).toContain("If the transcript clearly says a field is not applicable, return \"N/A\".");
+        expect(request.instructions).toContain("Use an empty string when no reliable value exists.");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).full_transcript).toBe("yes");
     });
@@ -204,7 +206,7 @@ describe("parse-gpt stabilisation", () => {
         try {
             await expect(reviseTranscription(raw)).resolves.toBe(raw);
             expect(openAiMock.chatCreate).not.toHaveBeenCalled();
-            expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+            expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe(GPT_FLOW_CONFIG.revision.model);
             expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "none" });
             expectJsonSchemaFormat(openAiMock.responsesCreate.mock.calls[0][0], "revision_response", "correctedText");
             expect(providerLog.mock.calls[0]?.[0]).toContain("Provider request failed");
@@ -239,10 +241,10 @@ describe("parse-gpt stabilisation", () => {
         );
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4-mini");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.revision.model);
         expect(request.reasoning).toEqual({ effort: "none" });
         expectJsonSchemaFormat(request, "revision_response", "correctedText");
-        expect(request.instructions).toContain("If unsure, preserve the original wording.");
+        expect(request.instructions).toContain("If uncertain, preserve the original wording.");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(request.max_output_tokens).toBeGreaterThan(0);
     });
@@ -316,19 +318,17 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toContain("- Confirmed the backend keeps the old response shape.");
         expect(result).not.toContain("\"updates\"");
         expect(openAiMock.create).not.toHaveBeenCalled();
-        expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe("gpt-5.4-mini");
+        expect(openAiMock.responsesCreate.mock.calls[0][0].model).toBe(GPT_FLOW_CONFIG.notesLive.model);
         expect(openAiMock.responsesCreate.mock.calls[0][0].store).toBe(false);
         expect(openAiMock.responsesCreate.mock.calls[0][0].max_output_tokens).toBe(1024);
         expect(openAiMock.responsesCreate.mock.calls[0][0].reasoning).toEqual({ effort: "low" });
         const instructions = openAiMock.responsesCreate.mock.calls[0][0].instructions;
-        expect(instructions).toContain("Create useful structure once enough signal exists");
-        expect(instructions).toContain("As the session develops, prefer content-specific headings over generic headings.");
-        expect(instructions).toContain("When transcript_segment introduces a clear new major topic, create or use an appropriate ## heading.");
-        expect(instructions).toContain("After the first few updates, avoid continuing under one broad or generic section when clearer topic sections are available.");
-        expect(instructions).toContain("Prefer headings based on the actual content");
-        expect(instructions).toContain("fallbackAppendMarkdown with a concise new ## heading");
-        expect(instructions).toContain("Do not create a # document title in live updates.");
-        expect(instructions).toContain("Return append instructions only.");
+        expect(instructions).toContain("The output is a delta, not a replacement document.");
+        expect(instructions).toContain("usually within the first 2-4 meaningful updates");
+        expect(instructions).toContain("Prefer 2-5 content-specific sections rather than one generic running list.");
+        expect(instructions).toContain("Use fallbackAppendMarkdown when no existing heading fits");
+        expect(instructions).toContain("Do not create a # document title.");
+        expect(instructions).toContain('{"updates":[],"fallbackAppendMarkdown":""}');
         expect(instructions).not.toMatch(/fallback.*bullet-only/i);
         expectNoPromptExcludedLanguage(instructions);
     });
@@ -424,17 +424,9 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.create).not.toHaveBeenCalled();
     });
 
-    it("exposes stable production GPT flow defaults", () => {
-        expect(GPT_FLOW_CONFIG.notesLive).toEqual({
-            api: "responses",
-            model: "gpt-5.4-mini",
-            reasoning: "low",
-        });
-        expect(GPT_FLOW_CONFIG.reorganise).toEqual({
-            api: "responses",
-            model: "gpt-5.4",
-            reasoning: "low",
-        });
+    it("uses the selected GPT workflow profile consistently", () => {
+        expect(GPT_FLOW_CONFIG.notesLive).toBe(GPT_FLOW_PROFILES[GPT_MODEL_PROFILE].notesLive);
+        expect(GPT_FLOW_CONFIG.reorganise).toBe(GPT_FLOW_PROFILES[GPT_MODEL_PROFILE].reorganise);
     });
 
     it("uses the Notes live Responses strict-schema provider by default", async () => {
@@ -467,7 +459,7 @@ describe("parse-gpt stabilisation", () => {
         expect(openAiMock.create).not.toHaveBeenCalled();
         expect(openAiMock.responsesCreate).toHaveBeenCalledTimes(1);
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4-mini");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.notesLive.model);
         expect(request.store).toBe(false);
         expect(request.reasoning).toEqual({ effort: "low" });
         expect(request.text?.format).toMatchObject({
@@ -684,19 +676,16 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toBe("## Summary\n\n- Final note.");
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.notesFinal.model);
         expect(request.reasoning).toEqual({ effort: "medium" });
         expect(request.max_output_tokens).toBe(2048);
         expectJsonSchemaFormat(request, "notes_final_response", "notesMarkdown");
-        expect(request.instructions).toContain("Treat current_notes as the canonical draft");
-        expect(request.instructions).toContain("Manual edits are not separately marked as immutable");
-        expect(request.instructions).toContain("If available_transcript is sparse, partial, or mostly confirms the existing draft");
-        expect(request.instructions).toContain("If available_transcript corrects current_notes, apply the correction");
-        expect(request.instructions).toContain("If current_notes and available_transcript repeat the same idea, keep one clean final version");
-        expect(request.instructions).toContain("Preserve unresolved questions, TODOs, user-provided actions, owners, dates, constraints, warnings, decisions");
-        expect(request.instructions).toContain("Do not preserve live-note artefacts");
-        expect(request.instructions).toContain("not a raw merge");
-        expect(request.instructions).toContain("Do not keep a \"Live updates\" section in the final notes.");
+        expect(request.instructions).toContain("current_notes is the canonical accumulated draft and primary continuity source.");
+        expect(request.instructions).toContain("Do not remove useful current_notes content solely because it is absent from available_transcript.");
+        expect(request.instructions).toContain("User edits are not separately labelled");
+        expect(request.instructions).toContain("A clear transcript correction overrides an outdated note.");
+        expect(request.instructions).toContain("Duplicate sections and repeated bullets");
+        expect(request.instructions).toContain("Temporary headings such as \"Live updates\"");
         expect(request.instructions).toContain("- No relevant notes captured.");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).current_notes).toBe("## Draft\n\n- Existing note.");
@@ -754,37 +743,16 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toEqual({ summaryMarkdown: "## Summary\n\n- Condensed note." });
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.summarise.model);
         expect(request.reasoning).toEqual({ effort: "medium" });
         expect(request.max_output_tokens).toBeGreaterThan(2532);
         expectJsonSchemaFormat(request, "notes_summary_response", "summaryMarkdown");
-        expect(request.instructions).toContain("Transform current visible notes only.");
-        expect(request.instructions).toContain("Do not add a Quick Checklist unless explicitly requested in the notes.");
-        expect(request.instructions).toContain("Compression should be adaptive");
-        expect(request.instructions).toContain("Produce a condensed summary, not a cleaned-up rewrite and not a reorganised version.");
-        expect(request.instructions).toContain("preserving the existing structure only where it helps reviewability");
-        expect(request.instructions).toContain("Preserve existing structure where it improves reviewability.");
-        expect(request.instructions).toContain("Do not behave like Reorganise");
-        expect(request.instructions).toContain("produce a visibly shorter review version");
-        expect(request.instructions).toContain("Long notes should usually be meaningfully shorter");
-        expect(request.instructions).toContain("do not force an exact percentage");
-        expect(request.instructions).toContain("aim roughly for 50-75% of the original length");
-        expect(request.instructions).toContain("accuracy and reviewability are more important than hitting a fixed ratio");
-        expect(request.instructions).toContain("merge related sections");
-        expect(request.instructions).toContain("reduce low-value headings and subheadings");
-        expect(request.instructions).toContain("reduce both wording and structure");
-        expect(request.instructions).toContain("avoid preserving a one-to-one outline of the source");
-        expect(request.instructions).toContain("clearly different from a reorganised version of the same notes");
-        expect(request.instructions).toContain("Remove repeated examples, repeated explanation, repeated framing, transcript-like wording, and overly granular supporting detail.");
-        expect(request.instructions).toContain("Merge small or overlapping bullets where meaning is preserved.");
-        expect(request.instructions).toContain("Do not preserve every bullet; preserve the important meaning.");
-        expect(request.instructions).toContain("Prefer shorter wording.");
-        expect(request.instructions).toContain("preserving decisions, actions, owners, deadlines, risks, blockers, obligations, constraints, open questions, safety-critical facts, explicit user-provided constraints");
-        expect(request.instructions).toContain("If a question is answered elsewhere in current_visible_notes");
-        expect(request.instructions).toContain("For long notes, merge clearly related or lower-priority headings when doing so preserves the key meaning and makes the result easier to review.");
-        expect(request.instructions).toContain("For dense process, RCA, incident-review, support, or training notes, group repeated procedural details under fewer headings.");
-        expect(request.instructions).toContain("Keep the governing rule, exception, owner/action, constraint, risk, deadline, and open question");
-        expect(request.instructions).toContain("When there are many procedural bullets saying similar things, preserve the rule once and merge the rest into a shorter summary.");
+        expect(request.instructions).toContain("Produce a shorter review-oriented version");
+        expect(request.instructions).toContain("not a full rewrite and not a reorganisation-only task");
+        expect(request.instructions).toContain("Medium and long notes should become visibly shorter.");
+        expect(request.instructions).toContain("Do not preserve every source bullet.");
+        expect(request.instructions).toContain("Keep the governing rule, exception, owner, action, constraint, risk, deadline, and unresolved issue");
+        expect(request.instructions).toContain("Do not add a Quick Checklist unless explicitly requested in the source notes.");
         expect(request.instructions).toContain("Use only current_visible_notes.");
         expect(request.instructions).not.toContain("Preserve important facts, definitions, actions, caveats, risks, dates, numbers, commands, IDs, technical terms, product names, names, and relevant examples.");
         expectNoPromptExcludedLanguage(request.instructions);
@@ -917,14 +885,14 @@ describe("parse-gpt stabilisation", () => {
         expect(result).toEqual({ reorganisedMarkdown: reorganised });
         expect(openAiMock.chatCreate).not.toHaveBeenCalled();
         const request = openAiMock.responsesCreate.mock.calls[0][0];
-        expect(request.model).toBe("gpt-5.4");
+        expect(request.model).toBe(GPT_FLOW_CONFIG.reorganise.model);
         expect(request.reasoning).toEqual({ effort: "low" });
         expect(request.max_output_tokens).toBeGreaterThan(3289);
         expectJsonSchemaFormat(request, "notes_reorganise_response", "reorganisedMarkdown");
-        expect(request.instructions).toContain("Transform current visible notes only.");
-        expect(request.instructions).toContain("Preserve more useful detail and examples than Summarise would.");
+        expect(request.instructions).toContain("Reorganise current_visible_notes into a clearer structure while preserving nearly all useful detail.");
+        expect(request.instructions).toContain("Preserve more detail than a summary would.");
         expect(request.instructions).toContain("- No relevant notes captured.");
-        expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised notes markdown>\"}");
+        expect(request.instructions).toContain("{\"reorganisedMarkdown\":\"<reorganised markdown>\"}");
         expectNoPromptExcludedLanguage(request.instructions);
         expect(JSON.parse(request.input).target_sections).toEqual(["Concepts", "Actions"]);
     });

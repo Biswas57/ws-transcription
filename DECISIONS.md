@@ -202,15 +202,10 @@ audio batch
 ### GPT Runtime Architecture
 
 - GPT runtime defaults are centralised in `gpt/model-config.ts` through `GPT_FLOW_CONFIG`.
-- Production provider/model/reasoning defaults are intentionally static:
-  - Revision: Responses, `gpt-5.4-mini`, reasoning `none`.
-  - Forms live extraction: Chat Completions, `gpt-5.4-mini`, reasoning `low`.
-  - Notes live patching: Responses strict schema, `gpt-5.4-mini`, reasoning `low`, with no Chat fallback.
-  - Forms final extraction: Responses, `gpt-5.4`, reasoning `medium`.
-  - Notes finalisation: Responses, `gpt-5.4`, reasoning `medium`.
-  - Notes Summarise: Responses, `gpt-5.4`, reasoning `medium`.
-  - Notes Reorganise: Responses, `gpt-5.4`, reasoning `low`.
-- Experiment-era production env flags for Notes live provider selection and Reorganise reasoning overrides have been removed. Future provider/model/reasoning changes should be explicit code changes backed by evals, not hidden runtime switches.
-- Deployment/auth/runtime env vars remain valid and are not experiment flags: `OPENAI_API_KEY`, `WS_TOKEN_SECRET`, `NOTES_TRANSFORM_SECRET`, `ALLOWED_ORIGIN`, `VAD_MODE`, `WHISPER_REQUEST_TIMEOUT_MS`, and `GPT_REQUEST_TIMEOUT_MS`.
+- `GPT_MODEL_PROFILE` selects one complete allowlisted workflow matrix. `gpt-5.6` is the default: Luna/none for revision, Luna/low for Forms and Notes live, Terra/medium for Forms final, Notes final, and Summarise, and Luna/low for Reorganise.
+- `GPT_MODEL_PROFILE=gpt-5.4` restores the complete previous GPT-5.4 matrix without a code revert. API routing and fallback policy are identical between profiles.
+- Forms live remains Chat Completions. Notes live remains Responses strict schema only with no Chat fallback, and its empty patch contains both required fields: `{"updates":[],"fallbackAppendMarkdown":""}`.
+- Audio transcription remains on `whisper-1`. The profile change does not alter prompts, structured output contracts, canonical state, WebSocket/HTTP shapes, recovery paths, VAD, batching, caps, or finalisation behaviour.
+- Deployment/auth/runtime env vars include `OPENAI_API_KEY`, `WS_TOKEN_SECRET`, `NOTES_TRANSFORM_SECRET`, `ALLOWED_ORIGIN`, `VAD_MODE`, `WHISPER_REQUEST_TIMEOUT_MS`, `GPT_REQUEST_TIMEOUT_MS`, and `GPT_MODEL_PROFILE`.
 - Test/eval-only flags remain confined to test tooling, such as `OPENAI_EVALS`, `OPENAI_EVAL_FLOWS`, `OPENAI_EVALS_WRITE_OUTPUTS`, `OPENAI_EVALS_OUTPUT_DIR`, and test/load `WS_URL`.
 - Notes live failure categories are metadata only (`provider_error`, `incomplete_response`, `empty_output`, `parse_failed`, `schema_invalid`). Failed live patch calls preserve current notes by returning a no-op patch and logging safe metadata only.
