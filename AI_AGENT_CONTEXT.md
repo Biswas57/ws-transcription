@@ -100,6 +100,7 @@ WS_URL=ws://localhost:5551 pnpm load-test
 - `WHISPER_REQUEST_TIMEOUT_MS`: optional Whisper request timeout.
 - `GPT_REQUEST_TIMEOUT_MS`: optional GPT request timeout.
 - `GPT_MODEL_PROFILE`: optional GPT workflow profile, either `gpt-5.6` (default) or `gpt-5.4` (rollback).
+- `NOTES_LIVE_CADENCE_PROFILE`: optional Notes scheduling profile, either `normal` (default) or `showcase`.
 - `NOTES_TRANSFORM_SECRET`: required for server-to-server Notes transform and finalisation recovery HTTP endpoints; callers send `Authorization: Bearer <secret>`.
 
 ## HTTP Notes Transform Contract
@@ -293,6 +294,8 @@ audio batch
 ```
 
 Coalescing is not raw audio batching. It combines revised transcript text before a Notes GPT update.
+
+Notes live cadence is selected with `NOTES_LIVE_CADENCE_PROFILE`. `normal` preserves the established 15-second early cadence and long-session taper. `showcase` uses a two-chunk first transcription batch, then time-plus-content-gated live attempts at approximately 3.5, 5, 7, and 10 seconds before returning to the normal long-session taper. Both profiles remain one-in-flight, require new revised transcript, and preserve the same prompt, model, strict patch schema, Stop flush, finalisation, and recovery behaviour.
 
 After Stop:
 

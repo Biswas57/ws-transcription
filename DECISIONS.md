@@ -206,6 +206,13 @@ audio batch
 - `GPT_MODEL_PROFILE=gpt-5.4` restores the complete previous GPT-5.4 matrix without a code revert. API routing and fallback policy are identical between profiles.
 - Forms live remains Chat Completions. Notes live remains Responses strict schema only with no Chat fallback, and its empty patch contains both required fields: `{"updates":[],"fallbackAppendMarkdown":""}`.
 - Audio transcription remains on `whisper-1`. The profile change does not alter prompts, structured output contracts, canonical state, WebSocket/HTTP shapes, recovery paths, VAD, batching, caps, or finalisation behaviour.
-- Deployment/auth/runtime env vars include `OPENAI_API_KEY`, `WS_TOKEN_SECRET`, `NOTES_TRANSFORM_SECRET`, `ALLOWED_ORIGIN`, `VAD_MODE`, `WHISPER_REQUEST_TIMEOUT_MS`, `GPT_REQUEST_TIMEOUT_MS`, and `GPT_MODEL_PROFILE`.
+- Deployment/auth/runtime env vars include `OPENAI_API_KEY`, `WS_TOKEN_SECRET`, `NOTES_TRANSFORM_SECRET`, `ALLOWED_ORIGIN`, `VAD_MODE`, `WHISPER_REQUEST_TIMEOUT_MS`, `GPT_REQUEST_TIMEOUT_MS`, `GPT_MODEL_PROFILE`, and `NOTES_LIVE_CADENCE_PROFILE`.
 - Test/eval-only flags remain confined to test tooling, such as `OPENAI_EVALS`, `OPENAI_EVAL_FLOWS`, `OPENAI_EVALS_WRITE_OUTPUTS`, `OPENAI_EVALS_OUTPUT_DIR`, and test/load `WS_URL`.
 - Notes live failure categories are metadata only (`provider_error`, `incomplete_response`, `empty_output`, `parse_failed`, `schema_invalid`). Failed live patch calls preserve current notes by returning a no-op patch and logging safe metadata only.
+
+### Notes Live Cadence
+
+- `NOTES_LIVE_CADENCE_PROFILE` selects `normal` (default) or `showcase` at process startup.
+- `normal` preserves the established early cadence and long-session taper. `showcase` uses one two-chunk initial transcription batch and faster 3.5/5/7/10-second live attempt stages for short demos.
+- Every live attempt remains gated by both elapsed time and new revised transcript. Only one provider request may run at once; valid no-ops consume their batch, while failed batches are restored without immediate retry loops.
+- Cadence changes do not alter Notes prompts, GPT profiles, strict patch schema, canonical notes, WebSocket shapes, Stop/finalisation, recovery, Forms, VAD rules, or later transcription batching.

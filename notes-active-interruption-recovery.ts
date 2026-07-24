@@ -14,7 +14,9 @@ export type NotesActiveInterruptionSnapshot = {
     pendingNotesTranscript: string;
     passCount: number;
     sessionStartedAt: number;
-    lastNotesUpdateAt: number;
+    notesLiveCompletedAttemptCount: number;
+    notesLiveSuccessfulPatchCount: number;
+    lastNotesAttemptAt: number;
     finalisationRecoveryId: string | null;
 };
 

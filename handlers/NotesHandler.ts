@@ -34,27 +34,27 @@ import {
     type NotesActiveInterruptionRecoveryStore,
     type NotesActiveInterruptionSnapshot,
 } from "../notes-active-interruption-recovery.js";
+import {
+    NOTES_LIVE_CADENCE_PROFILE,
+    getNextNotesLiveCadence,
+    getNotesLiveTranscriptMetrics,
+    hasEnoughNotesLiveTranscript,
+    type NotesLiveCadenceDecision,
+    type NotesLiveCadenceProfile,
+    type NotesLiveTranscriptMetrics,
+} from "../notes-live-cadence.js";
 
 // ─── Adaptive notes update scheduler ─────────────────────────────────────────
 //
-// Notes updates use a time-and-chars based cadence so that:
-//   - Early in a session updates feel real-time (every ~7.5s once enough text lands)
-//   - Long sessions taper off to avoid stacking full-document rewrites
+// Notes updates use a time-and-content cadence so that:
+//   - Showcase sessions surface useful early structure quickly
+//   - Normal sessions preserve the established cadence
+//   - Long sessions taper to the existing efficient schedule
 //   - At most one live patch generation runs at a time per session (one-in-flight)
 //
-// Both conditions must hold (AND logic) before an update fires:
-//   - enough wall-clock time has elapsed since the last update
-//   - enough pending revised transcript has accumulated
-//
-// lastNotesUpdateAt is initialised to sessionStartedAt so the first update
-// waits for the early-phase interval rather than firing immediately.
-
-type NotesUpdatePhase = {
-    name: "early" | "settled" | "long" | "extended";
-    untilMs: number;
-    maxWaitMs: number;
-    minPendingChars: number;
-};
+// A session timer wakes the scheduler when the time gate opens. Transcript
+// arrivals still drive the content gate, so an empty or fragmentary batch never
+// calls the provider solely because a timer elapsed.
 
 type StopTrigger = "client" | "session-cap";
 type NotesHandlerAuthContext = {
@@ -65,18 +65,8 @@ type NotesHandlerAuthContext = {
 type NotesHandlerDeps = {
     finalisationRecoveryStore?: NotesFinalisationRecoveryStore;
     activeInterruptionRecoveryStore?: NotesActiveInterruptionRecoveryStore;
+    cadenceProfile?: NotesLiveCadenceProfile;
 };
-
-const NOTES_UPDATE_PHASES: NotesUpdatePhase[] = [
-    { name: "early", untilMs: 2 * 60_000, maxWaitMs: 15_000, minPendingChars: 80 },
-    { name: "settled", untilMs: 10 * 60_000, maxWaitMs: 30_000, minPendingChars: 280 },
-    { name: "long", untilMs: 30 * 60_000, maxWaitMs: 60_000, minPendingChars: 600 },
-    { name: "extended", untilMs: Infinity, maxWaitMs: 120_000, minPendingChars: 1200 },
-];
-
-function getNotesPhase(elapsedMs: number): NotesUpdatePhase {
-    return NOTES_UPDATE_PHASES.find((phase) => elapsedMs < phase.untilMs) ?? NOTES_UPDATE_PHASES[NOTES_UPDATE_PHASES.length - 1];
-}
 
 function countWords(text: string): number {
     const trimmed = text.trim();
@@ -103,8 +93,8 @@ export class NotesHandler implements TranscriptionHandler {
     //   prevents a second call from starting until the first completes.
     // notesUpdatePromise: the in-flight promise, stored so onStop (T-012c) can
     //   await it before flushing pending transcript and running finalizeNotes.
-    // lastNotesUpdateAt: timestamp of last completed update, seeded to
-    //   sessionStartedAt so the first update waits for the early-phase interval.
+    // lastNotesAttemptAt: timestamp of the last completed provider attempt,
+    //   including no-op/failure, so retries cannot form a tight loop.
     // isStopping: set once onStop begins so the scheduler's follow-up check
     //   cannot start new updates — Stop owns the single flush + finalisation
     //   path and must not wait for or trigger extra scheduler work.
@@ -112,7 +102,10 @@ export class NotesHandler implements TranscriptionHandler {
     private notesUpdateInFlight = false;
     private notesUpdatePromise: Promise<void> | null = null;
     private notesUpdateActiveBatch = "";
-    private lastNotesUpdateAt = 0;
+    private notesUpdateTimer: NodeJS.Timeout | null = null;
+    private notesLiveCompletedAttemptCount = 0;
+    private notesLiveSuccessfulPatchCount = 0;
+    private lastNotesAttemptAt = 0;
     private isStopping = false;
     private sessionCapTimer: NodeJS.Timeout | null = null;
     private stopPromise: Promise<void> | null = null;
@@ -124,6 +117,7 @@ export class NotesHandler implements TranscriptionHandler {
     private finalisationRecoveryEnabled = false;
     private finalisationRecoveryStore: NotesFinalisationRecoveryStore;
     private activeInterruptionRecoveryStore: NotesActiveInterruptionRecoveryStore;
+    private cadenceProfile: NotesLiveCadenceProfile;
     private activeRecordingRecoveryStatus: "resumed" | "expired" | "not_found" | null = null;
 
     constructor(
@@ -136,6 +130,7 @@ export class NotesHandler implements TranscriptionHandler {
             deps.finalisationRecoveryStore ?? defaultNotesFinalisationRecoveryStore;
         this.activeInterruptionRecoveryStore =
             deps.activeInterruptionRecoveryStore ?? defaultNotesActiveInterruptionRecoveryStore;
+        this.cadenceProfile = deps.cadenceProfile ?? NOTES_LIVE_CADENCE_PROFILE;
         this.st = {
             ...makeAudioState(),
             noteStyle: "general",
@@ -172,14 +167,17 @@ export class NotesHandler implements TranscriptionHandler {
         this.st.currentMarkdown = providedNotesMarkdown;
         this.passCount = 0;
         this.sessionStartedAt = Date.now();
-        // Seed lastNotesUpdateAt to session start so the AND-logic time gate
-        // makes the first notes update wait for the early-phase interval (7.5s)
-        // rather than firing immediately on the first revised segment.
-        this.lastNotesUpdateAt = this.sessionStartedAt;
+        this.clearNotesUpdateTimer();
+        // The first time gate starts with the recording. If meaningful revised
+        // transcript arrives after it opens, the first live attempt can start
+        // immediately instead of waiting for another transcription batch.
+        this.lastNotesAttemptAt = this.sessionStartedAt;
         this.pendingNotesTranscript = "";
         this.notesUpdateInFlight = false;
         this.notesUpdatePromise = null;
         this.notesUpdateActiveBatch = "";
+        this.notesLiveCompletedAttemptCount = 0;
+        this.notesLiveSuccessfulPatchCount = 0;
         this.isStopping = false;
         this.stopPromise = null;
         this.overloadSignaled = false;
@@ -221,6 +219,7 @@ export class NotesHandler implements TranscriptionHandler {
             `canonicalNotesChars: ${this.st.currentMarkdown.length}, ` +
             `truncatedForCanonical: false, ` +
             `activeRecordingRecovery: ${this.activeRecordingRecoveryStatus ?? "not-attempted"}, ` +
+            `cadenceProfile: ${this.cadenceProfile.name}, ` +
             `capWindow: ${this.capWindow !== null}, ` +
             `capWindowReused: ${this.capWindow?.capWindowReused ?? false}`
         );
@@ -235,6 +234,7 @@ export class NotesHandler implements TranscriptionHandler {
             capWindowReused: this.capWindow?.capWindowReused ?? false,
             finalisationRecovery: this.finalisationRecoveryEnabled,
             activeRecordingRecovery: this.activeRecordingRecoveryStatus ?? "not-attempted",
+            notesLiveCadenceProfile: this.cadenceProfile.name,
         });
 
         const startedMessage: {
@@ -250,6 +250,9 @@ export class NotesHandler implements TranscriptionHandler {
             startedMessage.activeRecordingRecovery = this.activeRecordingRecoveryStatus;
         }
         this.send(startedMessage);
+        if (this.activeRecordingRecoveryStatus === "resumed") {
+            this.maybeScheduleNotesUpdate();
+        }
     }
 
     async onAudioChunk(chunk: Buffer): Promise<void> {
@@ -445,6 +448,7 @@ export class NotesHandler implements TranscriptionHandler {
         // in-flight update still completes and is awaited below; Stop then owns
         // the single pending flush + finalisation.
         this.isStopping = true;
+        this.clearNotesUpdateTimer();
         this.markFinalisationRecoveryPending(trigger);
         console.log(
             `[${this.sessionId}][notes] Stop received — ` +
@@ -653,6 +657,7 @@ export class NotesHandler implements TranscriptionHandler {
         const queuePendingAtClose = this.queue.pending;
         this.closed = true;
         this.clearSessionCapTimer();
+        this.clearNotesUpdateTimer();
         // Stop any future scheduling: an in-flight update's finally-block
         // follow-up checks isStopping, so it won't schedule after close.
         this.isStopping = true;
@@ -743,6 +748,9 @@ export class NotesHandler implements TranscriptionHandler {
     // Whisper/revision pass fires, based on elapsed session time. Later phases
     // taper to NOTES_DEFAULT_MIN_CHUNKS. Forms mode does not use this path.
     private notesChunkThreshold(): number {
+        if (this.passCount === 0) {
+            return this.cadenceProfile.firstTranscriptionBatchChunks;
+        }
         const elapsed = Date.now() - this.sessionStartedAt;
         for (const phase of NOTES_CHUNK_PHASES) {
             if (elapsed < phase.untilMs) return phase.minChunks;
@@ -752,31 +760,42 @@ export class NotesHandler implements TranscriptionHandler {
 
     // ── Adaptive scheduler ────────────────────────────────────────────────────
     //
-    // Called after each queue job appends to pendingNotesTranscript, and once
-    // more after each in-flight notes update completes (follow-up check).
-    //
-    // AND conditions before firing:
-    //   1. No notes update currently in flight.
-    //   2. Enough pending revised transcript for the current phase.
-    //   3. Enough wall-clock time since the last update for the current phase.
-    //
-    // On error: restores the batch to pendingNotesTranscript so content is
-    // not silently dropped — will retry on the next maybeScheduleNotesUpdate call.
+    // Called after revised transcript arrives, when a cadence timer opens, and
+    // after each in-flight attempt completes. Time and content gates must both
+    // pass. Failed batches are restored, but the completed-attempt watermark
+    // still advances so provider failures cannot create a tight retry loop.
     private maybeScheduleNotesUpdate(): void {
-        if (this.closed) return;
-        // Once Stop has begun, do not start new scheduled updates (including the
-        // finally-block follow-up). Stop awaits the in-flight update, then runs
-        // exactly one flush + finalisation.
-        if (this.isStopping) return;
+        if (this.closed || this.isStopping) {
+            this.clearNotesUpdateTimer();
+            return;
+        }
         if (this.notesUpdateInFlight) return;
-        if (this.pendingNotesTranscript.length === 0) return;
+        if (this.pendingNotesTranscript.length === 0) {
+            this.clearNotesUpdateTimer();
+            return;
+        }
 
         const elapsed = Date.now() - this.sessionStartedAt;
-        const phase = getNotesPhase(elapsed);
-        const timeSinceLast = Date.now() - this.lastNotesUpdateAt;
+        const cadence = getNextNotesLiveCadence({
+            profile: this.cadenceProfile,
+            completedAttemptCount: this.notesLiveCompletedAttemptCount,
+            elapsedSessionMs: elapsed,
+        });
+        const transcriptMetrics = getNotesLiveTranscriptMetrics(
+            this.pendingNotesTranscript
+        );
+        if (!hasEnoughNotesLiveTranscript(transcriptMetrics, cadence)) {
+            this.clearNotesUpdateTimer();
+            return;
+        }
 
-        if (this.pendingNotesTranscript.length < phase.minPendingChars) return;
-        if (timeSinceLast < phase.maxWaitMs) return;
+        const timeSinceLastAttempt = Date.now() - this.lastNotesAttemptAt;
+        const remainingDelayMs = Math.max(0, cadence.delayMs - timeSinceLastAttempt);
+        if (remainingDelayMs > 0) {
+            this.armNotesUpdateTimer(cadence, transcriptMetrics, remainingDelayMs);
+            return;
+        }
+        this.clearNotesUpdateTimer();
 
         // Snapshot and clear the buffer before any async work.
         // Any new segments appended by concurrent queue jobs land in the fresh
@@ -789,19 +808,33 @@ export class NotesHandler implements TranscriptionHandler {
         const updateStart = Date.now();
         console.log(
             `[${this.sessionId}][notes] Scheduled update start — ` +
-            `phase: ${phase.name}, pendingChars: ${batch.length}, ` +
+            `cadenceProfile: ${this.cadenceProfile.name}, ` +
+            `cadenceStage: ${cadence.stage}, pendingChars: ${batch.length}, ` +
+            `pendingWords: ${transcriptMetrics.words}, ` +
+            `completedAttempts: ${this.notesLiveCompletedAttemptCount}, ` +
             `currentMarkdownChars: ${this.st.currentMarkdown.length}`
         );
         recordUsageEvent("notes_live_patch_scheduled", {
             mode: "notes",
-            phase: phase.name,
+            phase: cadence.stage,
+            cadenceProfile: this.cadenceProfile.name,
+            selectedDelayMs: cadence.delayMs,
+            completedAttemptCount: this.notesLiveCompletedAttemptCount,
+            successfulPatchCount: this.notesLiveSuccessfulPatchCount,
             pendingChars: batch.length,
+            pendingWords: transcriptMetrics.words,
             currentNotesChars: this.st.currentMarkdown.length,
             elapsedSessionMs: elapsed,
-            timeSinceLastMs: timeSinceLast,
+            timeSinceLastAttemptMs: timeSinceLastAttempt,
         });
 
         this.notesUpdatePromise = (async () => {
+            let attemptStatus:
+                | "applied"
+                | "no-op"
+                | "parse-failed"
+                | "provider-failed"
+                | "closed" = "provider-failed";
             try {
                 const patch = await generateNotesIncrementalPatch(
                     batch,
@@ -809,8 +842,12 @@ export class NotesHandler implements TranscriptionHandler {
                     this.st.noteStyle,
                     this.st.sections,
                 );
-                if (this.closed) return;
+                if (this.closed) {
+                    attemptStatus = "closed";
+                    return;
+                }
                 if (patch.parseFailed) {
+                    attemptStatus = "parse-failed";
                     this.restorePendingNotesBatch(batch);
                     console.warn(
                         `[${this.sessionId}][notes] Scheduled update patch parse failed — ` +
@@ -818,26 +855,39 @@ export class NotesHandler implements TranscriptionHandler {
                     );
                     return;
                 }
-                const updated = applyNotesLivePatch(this.st.currentMarkdown, patch);
+                const previousMarkdown = this.st.currentMarkdown;
+                const updated = applyNotesLivePatch(previousMarkdown, patch);
+                const changed = updated !== previousMarkdown;
                 this.st.currentMarkdown = updated;
-                this.lastNotesUpdateAt = Date.now();
+                if (changed) {
+                    this.notesLiveSuccessfulPatchCount++;
+                    attemptStatus = "applied";
+                } else {
+                    attemptStatus = "no-op";
+                }
                 console.log(
                     `[${this.sessionId}][notes] Scheduled update done — ` +
-                    `phase: ${phase.name}, duration: ${Date.now() - updateStart}ms, ` +
-                    `outputChars: ${updated.length}`
+                    `cadenceStage: ${cadence.stage}, status: ${attemptStatus}, ` +
+                    `duration: ${Date.now() - updateStart}ms, outputChars: ${updated.length}`
                 );
                 recordUsageEvent("notes_live_patch_applied", {
                     mode: "notes",
-                    phase: phase.name,
+                    phase: cadence.stage,
+                    cadenceProfile: this.cadenceProfile.name,
+                    status: attemptStatus,
                     pendingChars: batch.length,
                     outputChars: updated.length,
                     durationMs: Date.now() - updateStart,
+                    completedAttemptCount: this.notesLiveCompletedAttemptCount + 1,
+                    successfulPatchCount: this.notesLiveSuccessfulPatchCount,
                 });
                 this.send({ type: "notes_update", notesMarkdown: updated });
             } catch (e) {
+                attemptStatus = "provider-failed";
                 recordUsageEvent("notes_live_patch_failed", {
                     mode: "notes",
-                    phase: phase.name,
+                    phase: cadence.stage,
+                    cadenceProfile: this.cadenceProfile.name,
                     pendingChars: batch.length,
                     durationMs: Date.now() - updateStart,
                 });
@@ -847,11 +897,23 @@ export class NotesHandler implements TranscriptionHandler {
                 );
                 if (!this.closed) this.restorePendingNotesBatch(batch);
             } finally {
+                this.notesLiveCompletedAttemptCount++;
+                this.lastNotesAttemptAt = Date.now();
                 this.notesUpdateActiveBatch = "";
                 this.notesUpdateInFlight = false;
                 this.notesUpdatePromise = null;
+                recordUsageEvent("notes_live_patch_attempt_complete", {
+                    mode: "notes",
+                    cadenceProfile: this.cadenceProfile.name,
+                    cadenceStage: cadence.stage,
+                    status: attemptStatus,
+                    durationMs: Date.now() - updateStart,
+                    completedAttemptCount: this.notesLiveCompletedAttemptCount,
+                    successfulPatchCount: this.notesLiveSuccessfulPatchCount,
+                    pendingNotesTranscriptChars: this.pendingNotesTranscript.length,
+                });
                 // One follow-up check: if enough transcript accumulated while
-                // this update was running, fire another update immediately.
+                // this update was running, arm the next adaptive cadence.
                 // Guarded explicitly so that once Stop/Close has begun no
                 // scheduler-created follow-up can run — Stop owns the single
                 // flush + finalisation, and Close must not schedule after the
@@ -862,6 +924,37 @@ export class NotesHandler implements TranscriptionHandler {
                 }
             }
         })();
+    }
+
+    private armNotesUpdateTimer(
+        cadence: NotesLiveCadenceDecision,
+        transcriptMetrics: NotesLiveTranscriptMetrics,
+        delayMs: number
+    ): void {
+        if (this.notesUpdateTimer) return;
+        this.notesUpdateTimer = setTimeout(() => {
+            this.notesUpdateTimer = null;
+            this.maybeScheduleNotesUpdate();
+        }, delayMs);
+        this.notesUpdateTimer.unref?.();
+        recordUsageEvent("notes_live_cadence_timer_armed", {
+            mode: "notes",
+            cadenceProfile: this.cadenceProfile.name,
+            cadenceStage: cadence.stage,
+            selectedDelayMs: cadence.delayMs,
+            remainingDelayMs: delayMs,
+            completedAttemptCount: this.notesLiveCompletedAttemptCount,
+            successfulPatchCount: this.notesLiveSuccessfulPatchCount,
+            pendingChars: transcriptMetrics.chars,
+            pendingWords: transcriptMetrics.words,
+            elapsedSessionMs: Date.now() - this.sessionStartedAt,
+        });
+    }
+
+    private clearNotesUpdateTimer(): void {
+        if (!this.notesUpdateTimer) return;
+        clearTimeout(this.notesUpdateTimer);
+        this.notesUpdateTimer = null;
     }
 
     private restorePendingNotesBatch(batch: string): void {
@@ -941,7 +1034,9 @@ export class NotesHandler implements TranscriptionHandler {
         this.pendingNotesTranscript = snapshot.pendingNotesTranscript;
         this.passCount = snapshot.passCount;
         this.sessionStartedAt = snapshot.sessionStartedAt;
-        this.lastNotesUpdateAt = snapshot.lastNotesUpdateAt;
+        this.notesLiveCompletedAttemptCount = snapshot.notesLiveCompletedAttemptCount;
+        this.notesLiveSuccessfulPatchCount = snapshot.notesLiveSuccessfulPatchCount;
+        this.lastNotesAttemptAt = snapshot.lastNotesAttemptAt;
 
         if (snapshot.finalisationRecoveryId) {
             this.finalisationRecoveryId = snapshot.finalisationRecoveryId;
@@ -962,7 +1057,9 @@ export class NotesHandler implements TranscriptionHandler {
             ),
             passCount: this.passCount,
             sessionStartedAt: this.sessionStartedAt,
-            lastNotesUpdateAt: this.lastNotesUpdateAt,
+            notesLiveCompletedAttemptCount: this.notesLiveCompletedAttemptCount,
+            notesLiveSuccessfulPatchCount: this.notesLiveSuccessfulPatchCount,
+            lastNotesAttemptAt: this.lastNotesAttemptAt,
             finalisationRecoveryId: this.finalisationRecoveryId,
         };
     }

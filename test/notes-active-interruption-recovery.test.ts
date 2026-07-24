@@ -18,7 +18,9 @@ function snapshot() {
         pendingNotesTranscript: "Sensitive pending transcript text.",
         passCount: 2,
         sessionStartedAt: 100,
-        lastNotesUpdateAt: 200,
+        notesLiveCompletedAttemptCount: 2,
+        notesLiveSuccessfulPatchCount: 1,
+        lastNotesAttemptAt: 200,
         finalisationRecoveryId: "final-recovery-raw-id",
     };
 }

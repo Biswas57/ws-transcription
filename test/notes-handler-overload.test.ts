@@ -9,6 +9,9 @@ import {
     defaultNotesActiveInterruptionRecoveryStore,
     NotesActiveInterruptionRecoveryStore,
 } from "../notes-active-interruption-recovery.js";
+import {
+    NOTES_LIVE_CADENCE_PROFILES,
+} from "../notes-live-cadence.js";
 
 const LONG_TRANSCRIPT = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
 
@@ -115,6 +118,29 @@ function deferredBatch(): {
     });
     return { promise, resolve };
 }
+
+function deferredValue<T>(): {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+} {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+        resolve = res;
+    });
+    return { promise, resolve };
+}
+
+async function settlePromises(): Promise<void> {
+    for (let index = 0; index < 5; index++) {
+        await Promise.resolve();
+    }
+}
+
+type NotesSchedulerAccess = {
+    pendingNotesTranscript: string;
+    notesUpdateInFlight: boolean;
+    maybeScheduleNotesUpdate(): void;
+};
 
 beforeEach(() => {
     clearNotesCapWindowsForTest();
@@ -527,6 +553,163 @@ describe("Notes overload recovery support", () => {
         await Promise.all([handler.onStop(), handler.onStop()]);
 
         expect(markPendingSpy).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("Notes showcase live cadence", () => {
+    it("keeps the normal first-attempt gate at 15 seconds", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const socket = makeSocket();
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-normal-first-attempt",
+            {},
+            { cadenceProfile: NOTES_LIVE_CADENCE_PROFILES.normal }
+        );
+        await startNotes(handler);
+        const scheduler = handler as unknown as NotesSchedulerAccess;
+        scheduler.pendingNotesTranscript =
+            "This normal cadence transcript contains enough useful detail for a structured live update.";
+        scheduler.maybeScheduleNotesUpdate();
+
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(mockState.generateNotesIncrementalPatch).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await settlePromises();
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+
+        handler.onClose();
+    });
+
+    it("uses a two-chunk first transcription batch only for showcase sessions", async () => {
+        const socket = makeSocket();
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-showcase-first-batch",
+            {},
+            { cadenceProfile: NOTES_LIVE_CADENCE_PROFILES.showcase }
+        );
+        await startNotes(handler);
+
+        await sendChunks(handler, 1);
+        expect(mockState.transcribeAudioBatch).not.toHaveBeenCalled();
+
+        await sendChunks(handler, 1, 1);
+        await vi.waitFor(() => {
+            expect(mockState.transcribeAudioBatch).toHaveBeenCalledTimes(1);
+        });
+
+        handler.onClose();
+    });
+
+    it("waits for useful transcript and opens the first showcase attempt at 3.5 seconds", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const socket = makeSocket();
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-showcase-first-attempt",
+            {},
+            { cadenceProfile: NOTES_LIVE_CADENCE_PROFILES.showcase }
+        );
+        await startNotes(handler);
+        const scheduler = handler as unknown as NotesSchedulerAccess;
+
+        scheduler.pendingNotesTranscript = "Hello everyone, um, okay, thanks.";
+        scheduler.maybeScheduleNotesUpdate();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(mockState.generateNotesIncrementalPatch).not.toHaveBeenCalled();
+
+        vi.setSystemTime(0);
+        scheduler.pendingNotesTranscript =
+            "Planning a student fitness application with workout tracking.";
+        scheduler.maybeScheduleNotesUpdate();
+        await vi.advanceTimersByTimeAsync(3_499);
+        expect(mockState.generateNotesIncrementalPatch).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        await settlePromises();
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+
+        handler.onClose();
+    });
+
+    it("keeps one pass in flight and schedules accumulated transcript after completion", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const socket = makeSocket();
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-showcase-in-flight",
+            {},
+            { cadenceProfile: NOTES_LIVE_CADENCE_PROFILES.showcase }
+        );
+        await startNotes(handler);
+        const scheduler = handler as unknown as NotesSchedulerAccess;
+        const firstPatch = deferredValue<{ updates: [] }>();
+        mockState.generateNotesIncrementalPatch
+            .mockReturnValueOnce(firstPatch.promise)
+            .mockResolvedValue({ updates: [] });
+
+        scheduler.pendingNotesTranscript =
+            "Planning a student fitness application with workout tracking.";
+        scheduler.maybeScheduleNotesUpdate();
+        await vi.advanceTimersByTimeAsync(3_500);
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+        expect(scheduler.notesUpdateInFlight).toBe(true);
+
+        scheduler.pendingNotesTranscript =
+            "Sarah will interview students and document the main requirements.";
+        scheduler.maybeScheduleNotesUpdate();
+        await vi.advanceTimersByTimeAsync(20_000);
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+
+        firstPatch.resolve({ updates: [] });
+        await settlePromises();
+        expect(scheduler.notesUpdateInFlight).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await settlePromises();
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(2);
+
+        handler.onClose();
+    });
+
+    it("cancels a pending cadence timer when Stop takes ownership of the flush", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+
+        const socket = makeSocket();
+        const handler = new NotesHandler(
+            socket as never,
+            "test-notes-showcase-stop",
+            {},
+            { cadenceProfile: NOTES_LIVE_CADENCE_PROFILES.showcase }
+        );
+        await startNotes(handler);
+        const scheduler = handler as unknown as NotesSchedulerAccess;
+        scheduler.pendingNotesTranscript =
+            "Planning a student fitness application with workout tracking.";
+        scheduler.maybeScheduleNotesUpdate();
+
+        await handler.onStop();
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+        expect(mockState.finalizeNotes).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(mockState.generateNotesIncrementalPatch).toHaveBeenCalledTimes(1);
+        expect(mockState.finalizeNotes).toHaveBeenCalledTimes(1);
+
+        handler.onClose();
     });
 });
 
