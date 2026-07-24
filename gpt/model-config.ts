@@ -61,13 +61,13 @@ export const GPT_FLOW_PROFILES = {
         },
         formsFinal: {
             api: "responses",
-            model: "gpt-5.6-terra",
-            reasoning: "medium",
+            model: "gpt-5.6-sol",
+            reasoning: "low",
         },
         notesFinal: {
             api: "responses",
-            model: "gpt-5.6-terra",
-            reasoning: "medium",
+            model: "gpt-5.6-sol",
+            reasoning: "low",
         },
         summarise: {
             api: "responses",
